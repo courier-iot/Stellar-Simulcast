@@ -5,7 +5,7 @@ plugins {
 }
 
 // Bump this for every update. The GitHub workflow reads it and publishes the release as "v<appVersion>".
-val appVersion = "2.2.1"
+val appVersion = "2.2.2"
 val versionParts = appVersion.split(".").map { it.toInt() }
 
 // Signing details come from GitHub secrets (see .github/workflows/build.yml). Nothing secret is in the repo.

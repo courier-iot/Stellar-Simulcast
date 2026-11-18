@@ -43,10 +43,10 @@ data class Anime(
             else -> null
         }
 
-    /** A releasing show whose next episode is more than 8 days out has skipped a week. */
+    /** A releasing show whose next episode is over two weeks out is on a break (works for weekly and every-other-week shows). */
     fun onBreak(now: Long): Boolean {
         val at = nextAiringAt ?: return false
-        return status == "RELEASING" && (nextEpisode ?: 0) > 1 && at - now > 8 * 86400
+        return status == "RELEASING" && (nextEpisode ?: 0) > 1 && at - now > 15 * 86400
     }
 }
 

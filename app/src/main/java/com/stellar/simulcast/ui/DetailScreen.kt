@@ -79,6 +79,7 @@ import com.stellar.simulcast.data.AnimeDetail
 import com.stellar.simulcast.data.Anime
 import com.stellar.simulcast.data.ListStatus
 import com.stellar.simulcast.data.Lists
+import com.stellar.simulcast.data.TitleLang
 import androidx.compose.foundation.layout.widthIn
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stellar.simulcast.data.EpisodeInfo
@@ -194,7 +195,7 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga
         item {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Text(a.name(lang), color = Space.Text, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                a.altName(lang)?.let { Text(it, color = Space.Muted, style = MaterialTheme.typography.bodyMedium) }
+                a.altName(lang)?.let { AltTitle(it, lang) }
                 Spacer(Modifier.height(10.dp))
                 val trend = d.scoreChange?.takeIf { it != 0 }?.let { if (it > 0) " ▲$it" else " ▼${-it}" } ?: ""
                 val chips = listOfNotNull(
@@ -224,6 +225,14 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga
                         color = Space.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
                     )
                 }
+            }
+        }
+
+        // Synopsis, near the top and collapsed to a few lines
+        item {
+            Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 10.dp)) {
+                SectionLabel("Synopsis")
+                Synopsis(d.description)
             }
         }
 
@@ -416,7 +425,7 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga
             }
         }
 
-        // Genres + synopsis
+        // Genres
         item {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
                 if (a.genres.isNotEmpty()) {
@@ -424,8 +433,6 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga
                     Text(a.genres.joinToString(" · "), color = Space.Cyan)
                     Spacer(Modifier.height(14.dp))
                 }
-                SectionLabel("Synopsis")
-                SpoilerText(d.description, style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.navigationBarsPadding())
             }
         }
@@ -464,7 +471,7 @@ private fun NextEpisodePanel(d: AnimeDetail, now: Long) {
             }
             Text(TimeText.dateTime(streamAt), color = Space.Text)
 
-            if (a.onBreak(now)) {
+            if (onBreakNow(d, now)) {
                 Notice("Taking a break this week. Episode $ep is back on ${TimeText.date(streamAt)}.")
             } else {
                 upcomingGap(d.episodeList, now)?.let { after ->
@@ -510,6 +517,45 @@ private fun NextEpisodePanel(d: AnimeDetail, now: Long) {
                 color = Space.Text,
             )
         }
+    }
+}
+
+/** The other-language title: labelled, two lines max, tap to see it all. */
+@Composable
+private fun AltTitle(title: String, lang: TitleLang) {
+    var open by remember(title) { mutableStateOf(false) }
+    Text(
+        (if (lang == TitleLang.ENGLISH) "Japanese title: " else "English title: ") + title,
+        color = Space.Muted,
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = if (open) Int.MAX_VALUE else 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.clickable { open = !open },
+    )
+}
+
+/** Synopsis shown up top: a few lines, then "Read more". Respects spoiler-safe mode. */
+@Composable
+private fun Synopsis(text: String) {
+    if (Settings.display.spoilerSafe) {
+        SpoilerText(text, style = MaterialTheme.typography.bodyMedium)
+        return
+    }
+    var open by remember(text) { mutableStateOf(false) }
+    val long = text.length > 280
+    Text(
+        text,
+        color = Space.Text,
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = if (open || !long) Int.MAX_VALUE else 5,
+        overflow = TextOverflow.Ellipsis,
+    )
+    if (long) {
+        Text(
+            if (open) "Show less" else "Read more",
+            color = Space.Cyan, fontSize = 13.sp,
+            modifier = Modifier.clickable { open = !open }.padding(vertical = 6.dp),
+        )
     }
 }
 
@@ -570,14 +616,34 @@ private fun Notice(text: String) {
     )
 }
 
-/** First upcoming episode followed by a gap of more than 8 days. */
+/**
+ * How often the show usually airs (seconds): the median gap between episodes.
+ * Weekly shows come out at ~7 days, every-other-week shows at ~14.
+ */
+private fun typicalGap(list: List<EpisodeInfo>): Long {
+    val gaps = list.mapNotNull { it.airingAt }.sorted().zipWithNext { x, y -> y - x }.filter { it > 3600 }.sorted()
+    return if (gaps.isEmpty()) 7 * 86400L else gaps[gaps.size / 2]
+}
+
+/** A gap counts as a break only when it's clearly longer than the show's normal rhythm. */
+private fun breakThreshold(list: List<EpisodeInfo>): Long = maxOf(8 * 86400L, typicalGap(list) * 3 / 2)
+
+/** First upcoming episode followed by an unusually long gap. */
 private fun upcomingGap(list: List<EpisodeInfo>, now: Long): Int? {
+    val limit = breakThreshold(list)
     val upcoming = list.filter { (it.airingAt ?: 0) > now }
     return upcoming.zipWithNext().firstOrNull { (x, y) ->
         val ax = x.airingAt ?: return@firstOrNull false
         val ay = y.airingAt ?: return@firstOrNull false
-        ay - ax > 8 * 86400
+        ay - ax > limit
     }?.first?.number
+}
+
+/** True when the wait since the last episode to the next one is longer than the show's normal rhythm. */
+private fun onBreakNow(d: AnimeDetail, now: Long): Boolean {
+    val next = d.anime.nextAiringAt ?: return false
+    val last = d.episodeList.mapNotNull { it.airingAt }.filter { it <= now }.maxOrNull() ?: return false
+    return next - last > breakThreshold(d.episodeList)
 }
 
 /** Air time of the final episode: exact if scheduled, otherwise estimated weekly. */
@@ -588,7 +654,7 @@ private fun finishEstimate(d: AnimeDetail): Long? {
     d.episodeList.firstOrNull { it.number == total }?.airingAt?.let { return it }
     val last = d.episodeList.filter { it.airingAt != null }.maxByOrNull { it.number } ?: return null
     val lastAt = last.airingAt ?: return null
-    return if (last.number >= total) lastAt else lastAt + (total - last.number) * 7L * 86400
+    return if (last.number >= total) lastAt else lastAt + (total - last.number) * typicalGap(d.episodeList)
 }
 
 @Composable
