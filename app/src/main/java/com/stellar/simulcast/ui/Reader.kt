@@ -98,7 +98,10 @@ import com.stellar.simulcast.data.MangaLibrary
 import com.stellar.simulcast.data.PageFilter
 import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.attempt
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.launch
 
 private data class ReaderData(val manga: Manga, val chapters: List<Chapter>, val offline: Boolean)
@@ -247,20 +250,44 @@ private fun Reader(manga: Manga, order: List<Chapter>, startIndex: Int, startPag
             is Load.Error -> ErrorView(p.message) { retry++ }
             is Load.Ready -> {
                 val urls = p.data
-                // Get the next chapter's first pages ready near the end of this one.
+                // Download the whole chapter first, so every page is ready before you start.
+                var loadedCount by remember(urls) { mutableIntStateOf(0) }
+                var ready by remember(urls) { mutableStateOf(urls.firstOrNull()?.startsWith("file://") == true) }
+                LaunchedEffect(urls) {
+                    if (ready) return@LaunchedEffect
+                    val gate = Semaphore(4)
+                    var failed = false
+                    coroutineScope {
+                        urls.forEach { url ->
+                            launch {
+                                gate.withPermit {
+                                    val r = loader.execute(ImageRequest.Builder(ctx).data(url).build())
+                                    if (r is coil.request.ErrorResult) failed = true
+                                    loadedCount++
+                                }
+                            }
+                        }
+                    }
+                    if (failed) onPageError()
+                    ready = true
+                }
+                // Get the next chapter ready while you read the last few pages.
                 LaunchedEffect(chapter.id, currentPage >= urls.size - 3) {
                     if (hasNext && !offline && currentPage >= urls.size - 3) prefetch(ctx, loader, order[index + 1], prefs.dataSaver)
                 }
-                val end: @Composable () -> Unit = {
-                    EndCard(chapter, if (hasNext) order[index + 1] else null) { goTo(index + 1) }
-                }
-                key(chapter.id, prefs.webtoon, landscape) {
-                    if (prefs.webtoon) {
-                        WebtoonView(urls, loader, colorFilter, ratios, firstPage.coerceIn(0, urls.size), { currentPage = it },
-                            { showUi = !showUi }, { stepper = it }, onPageError, end)
-                    } else {
-                        PagedView(urls, loader, colorFilter, firstPage.coerceIn(0, urls.size), prefs.rtl, landscape && prefs.spreads,
-                            { currentPage = it }, { showUi = !showUi }, { stepper = it }, onPageError, end)
+                val next = if (hasNext) order[index + 1] else null
+                val goNext: () -> Unit = { if (hasNext) goTo(index + 1) }
+                if (!ready) {
+                    ChapterLoading(chapter, loadedCount, urls.size)
+                } else {
+                    key(chapter.id, prefs.webtoon, landscape) {
+                        if (prefs.webtoon) {
+                            WebtoonView(urls, loader, colorFilter, ratios, firstPage.coerceIn(0, urls.size - 1), { currentPage = it },
+                                { showUi = !showUi }, { stepper = it }, onPageError) { NextChapterBar(chapter, next, goNext) }
+                        } else {
+                            PagedView(urls, loader, colorFilter, firstPage.coerceIn(0, urls.size - 1), prefs.rtl, landscape && prefs.spreads,
+                                { currentPage = it }, { showUi = !showUi }, { stepper = it }, onPageError, goNext) { NextChapterBar(chapter, next, goNext) }
+                        }
                     }
                 }
             }
@@ -353,12 +380,13 @@ private fun PagedView(
     onCenterTap: () -> Unit,
     registerStepper: (((Int) -> Unit)?) -> Unit,
     onPageError: () -> Unit,
-    end: @Composable () -> Unit,
+    onNextChapter: () -> Unit,
+    nextBar: @Composable () -> Unit,
 ) {
     val ctx = LocalContext.current
     val groups = remember(urls.size, twoUp) { spreads(urls.size, twoUp) }
-    val startGroup = groups.indexOfFirst { startPage in it }.let { if (it < 0) groups.size else it }
-    val pager = rememberPagerState(initialPage = startGroup) { groups.size + 1 }
+    val startGroup = groups.indexOfFirst { startPage in it }.coerceAtLeast(0)
+    val pager = rememberPagerState(initialPage = startGroup) { groups.size }
     val scope = rememberCoroutineScope()
     var zoomed by remember { mutableStateOf(false) }
     val instant = remember { reduceMotion(ctx) }
@@ -370,8 +398,13 @@ private fun PagedView(
     }
 
     fun step(delta: Int) {
-        val target = (pager.currentPage + delta).coerceIn(0, groups.size)
-        scope.launch { if (instant) pager.scrollToPage(target) else pager.animateScrollToPage(target) }
+        val target = pager.currentPage + delta
+        if (target > groups.lastIndex) {
+            onNextChapter()
+            return
+        }
+        val t = target.coerceIn(0, groups.lastIndex)
+        scope.launch { if (instant) pager.scrollToPage(t) else pager.animateScrollToPage(t) }
     }
 
     DisposableEffect(Unit) {
@@ -379,15 +412,14 @@ private fun PagedView(
         onDispose { registerStepper(null) }
     }
 
+    Box(Modifier.fillMaxSize()) {
     HorizontalPager(
         state = pager,
         reverseLayout = rtl,
         userScrollEnabled = !zoomed,
         modifier = Modifier.fillMaxSize(),
     ) { g ->
-        if (g == groups.size) {
-            end()
-        } else {
+        run {
             val pageUrls = groups[g].map { urls[it] }
             ZoomablePage(
                 urls = if (rtl) pageUrls.reversed() else pageUrls,
@@ -402,6 +434,11 @@ private fun PagedView(
                 onError = onPageError,
             )
         }
+    }
+    // The next-chapter button sits on the last page itself.
+    if (pager.currentPage == groups.lastIndex) {
+        Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 64.dp)) { nextBar() }
+    }
     }
 }
 
@@ -506,7 +543,7 @@ private fun WebtoonView(
     onTap: () -> Unit,
     registerStepper: (((Int) -> Unit)?) -> Unit,
     onPageError: () -> Unit,
-    end: @Composable () -> Unit,
+    nextBar: @Composable () -> Unit,
 ) {
     val ctx = LocalContext.current
     val list = rememberLazyListState(initialFirstVisibleItemIndex = startPage)
@@ -548,28 +585,54 @@ private fun WebtoonView(
                 )
             }
         }
-        item { Box(Modifier.fillMaxWidth().height(420.dp)) { end() } }
+        item {
+            Box(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 120.dp), contentAlignment = Alignment.Center) { nextBar() }
+        }
     }
 }
 
 @Composable
-private fun EndCard(chapter: Chapter, next: Chapter?, onNext: () -> Unit) {
+private fun NextChapterBar(chapter: Chapter, next: Chapter?, onNext: () -> Unit) {
     Column(
-        Modifier.fillMaxSize().background(Space.Bg).padding(32.dp),
-        verticalArrangement = Arrangement.Center,
+        Modifier
+            .padding(horizontal = 24.dp)
+            .neonPanel()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("END OF ${chapter.label.uppercase()}", color = Space.Cyan, fontFamily = FontFamily.Monospace, letterSpacing = 3.sp)
-        Spacer(Modifier.height(6.dp))
         Text(
-            "Translated by ${chapter.group ?: "an unknown group"}. Support them and MangaDex if you enjoyed it.",
-            color = Space.Muted, fontSize = 12.sp, textAlign = TextAlign.Center,
+            "End of ${chapter.label} · translated by ${chapter.group ?: "an unknown group"}",
+            color = Space.Muted, fontSize = 11.sp, textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(8.dp))
         if (next != null) {
-            OutlinedButton(onClick = onNext) { Text("Next: ${chapterLine(next)}", color = Space.Cyan) }
+            OutlinedButton(onClick = onNext) {
+                Icon(Icons.Rounded.SkipNext, contentDescription = null, tint = Space.Cyan)
+                Spacer(Modifier.size(6.dp))
+                Text("Next: ${chapterLine(next)}", color = Space.Cyan, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         } else {
             Text("You're caught up.", color = Space.Text)
         }
+    }
+}
+
+@Composable
+private fun ChapterLoading(chapter: Chapter, done: Int, total: Int) {
+    Column(
+        Modifier.fillMaxSize().padding(40.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("LOADING ${chapter.label.uppercase()}", color = Space.Cyan, fontFamily = FontFamily.Monospace, letterSpacing = 3.sp)
+        Spacer(Modifier.height(14.dp))
+        androidx.compose.material3.LinearProgressIndicator(
+            progress = { if (total == 0) 0f else done.toFloat() / total },
+            color = Space.Cyan,
+            trackColor = Space.Card,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text("$done / $total pages", color = Space.Muted, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
     }
 }

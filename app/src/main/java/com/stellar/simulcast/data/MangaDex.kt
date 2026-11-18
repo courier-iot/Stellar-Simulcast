@@ -72,7 +72,7 @@ enum class MangaBrowse(val label: String) { POPULAR("Popular"), RECENT("Recently
  */
 object MangaDex {
     private const val API = "https://api.mangadex.org"
-    private const val USER_AGENT = "StellarSimulcast/2.2.0 (Android)"
+    private const val USER_AGENT = "StellarSimulcast/2.2.1 (Android)"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -152,8 +152,24 @@ object MangaDex {
         return mangaList(listOf(order, "hasAvailableChapters" to "true") + status + langs("availableTranslatedLanguage"), offset)
     }
 
-    suspend fun search(q: String, offset: Int): Paged<Manga> =
-        mangaList(listOf("title" to q, "order[relevance]" to "desc"), offset)
+    private val idPattern = Regex("""[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}""")
+
+    /** A pasted MangaDex link (or bare ID) opens that series directly. */
+    fun idFromLink(q: String): String? =
+        if (q.contains("mangadex.org") || idPattern.matches(q.trim())) idPattern.find(q)?.value else null
+
+    suspend fun search(q: String, offset: Int): Paged<Manga> {
+        idFromLink(q)?.let { id -> return Paged(listOf(manga(id)), false) }
+        return mangaList(listOf("title" to q, "order[relevance]" to "desc"), offset)
+    }
+
+    /** How many more matches there are with every content rating allowed (so we can say some are hidden). */
+    suspend fun hiddenByRatings(q: String): Int {
+        if (idFromLink(q) != null || Settings.manga.ratings.size == CONTENT_RATINGS.size) return 0
+        val mine = get("/manga", listOf("title" to q, "limit" to "1") + ratings() + tagParams()).optInt("total")
+        val all = get("/manga", listOf("title" to q, "limit" to "1") + ratings(all = true) + tagParams()).optInt("total")
+        return (all - mine).coerceAtLeast(0)
+    }
 
     private suspend fun mangaList(params: List<Pair<String, String>>, offset: Int, limit: Int = 30): Paged<Manga> {
         val json = get(

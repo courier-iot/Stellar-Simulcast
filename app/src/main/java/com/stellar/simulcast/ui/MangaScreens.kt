@@ -264,6 +264,7 @@ fun MangaSearchScreen(vm: MangaViewModel, openManga: (String) -> Unit, openAnime
     val state by vm.search.collectAsStateWithLifecycle()
     val novelsOn by vm.searchNovels.collectAsStateWithLifecycle()
     val novelState by vm.novelSearch.collectAsStateWithLifecycle()
+    val hidden by vm.hiddenCount.collectAsStateWithLifecycle()
     val now = rememberNow()
 
     Column(Modifier.fillMaxSize()) {
@@ -310,11 +311,23 @@ fun MangaSearchScreen(vm: MangaViewModel, openManga: (String) -> Unit, openAnime
             return@Column
         }
         when {
-            query.isBlank() -> EmptyView("Find a manga", "Search MangaDex by English or Japanese title.")
+            query.isBlank() -> EmptyView("Find a manga", "Search MangaDex by English or Japanese title, or paste a MangaDex link.")
             state.items.isEmpty() && state.loading -> LoadingView()
             state.items.isEmpty() && state.error != null -> ErrorView(state.error ?: "") { vm.setQuery(query) }
-            state.items.isEmpty() -> EmptyView("No matches", "Try another spelling, or check your content and language settings.")
+            state.items.isEmpty() -> EmptyView(
+                "No matches",
+                if (hidden > 0) "$hidden result${if (hidden == 1) " is" else "s are"} hidden by your content rating settings (Settings → Manga → Content ratings)."
+                else "Try another spelling, or paste the series' MangaDex link here.",
+            )
             else -> LazyColumn(contentPadding = PaddingValues(vertical = 6.dp)) {
+                if (hidden > 0) {
+                    item {
+                        Text(
+                            "$hidden more result${if (hidden == 1) " is" else "s are"} hidden by your content rating settings. Change them in Settings → Manga.",
+                            color = Space.Magenta, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
+                    }
+                }
                 items(state.items, key = { it.id }) { m ->
                     MangaRow(m, headline = pretty(m.status) ?: "Manga") { openManga(m.id) }
                 }

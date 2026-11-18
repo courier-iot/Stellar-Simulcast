@@ -36,6 +36,8 @@ class MangaViewModel : ViewModel() {
     val browse = MutableStateFlow(MPaged<Manga>())
     val query = MutableStateFlow("")
     val search = MutableStateFlow(MPaged<Manga>(hasMore = false))
+    /** Matches hidden by your content-rating settings for the current search. */
+    val hiddenCount = MutableStateFlow(0)
     val library = MutableStateFlow<Load<List<Manga>>>(Load.Loading)
 
     // Light novels (tracking only, from AniList).
@@ -173,9 +175,11 @@ class MangaViewModel : ViewModel() {
             return
         }
         search.value = MPaged(loading = true)
+        hiddenCount.value = 0
         searchJob = viewModelScope.launch {
             delay(450)
             search.value = merge(MPaged(), attempt { MangaDex.search(q.trim(), 0) }, 30) { it.id }
+            hiddenCount.value = runCatching { MangaDex.hiddenByRatings(q.trim()) }.getOrDefault(0)
         }
     }
 
