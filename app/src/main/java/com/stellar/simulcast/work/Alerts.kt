@@ -25,6 +25,10 @@ import com.stellar.simulcast.data.AiringEp
 import com.stellar.simulcast.data.AlertPrefs
 import com.stellar.simulcast.data.AniList
 import com.stellar.simulcast.data.Anime
+import com.stellar.simulcast.data.Chapter
+import com.stellar.simulcast.data.Manga
+import com.stellar.simulcast.data.MangaDex
+import com.stellar.simulcast.data.MangaLibrary
 import com.stellar.simulcast.data.SequelNews
 import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.TimeText
@@ -41,6 +45,7 @@ private val networkConstraint = Constraints.Builder().setRequiredNetworkType(Net
 private fun initAll(ctx: Context) {
     Watchlist.init(ctx)
     Settings.init(ctx)
+    MangaLibrary.init(ctx)
 }
 
 /** Runs on the chosen interval: new-episode alerts, sequel alerts (twice a day), and a widget refresh. */
@@ -120,6 +125,59 @@ class EpisodeCheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
     }
 }
 
+/** Every 2 hours: new chapters of manga you follow, in your languages. */
+class ChapterCheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+
+    override suspend fun doWork(): Result {
+        initAll(applicationContext)
+        val now = System.currentTimeMillis() / 1000
+        val follows = MangaLibrary.follows.value
+        if (!Settings.manga.chapterAlerts || !Watchlist.alerts.value || follows.isEmpty()) {
+            MangaLibrary.lastCheck = now
+            return Result.success()
+        }
+        if (Settings.alertPrefs.isQuiet(LocalTime.now().hour)) return Result.success()
+        val since = maxOf(MangaLibrary.lastCheck.takeIf { it > 0 } ?: (now - 3 * 3600), now - 3 * 86400)
+        return try {
+            val notified = MangaLibrary.notified.toMutableSet()
+            val fresh = mutableListOf<Pair<String, Chapter>>()
+            for (id in follows.take(60)) {
+                val chapters = MangaDex.chaptersSince(id, since)
+                    .filter { it.id !in notified && it.publishAt <= now }
+                    .distinctBy { it.number }
+                chapters.forEach { fresh += id to it; notified += it.id }
+                kotlinx.coroutines.delay(250) // stay well under MangaDex's rate limit
+            }
+            if (fresh.isNotEmpty()) {
+                val titles = MangaDex.byIds(fresh.map { it.first }.toSet()).associateBy { it.id }
+                val grouped = fresh.groupBy { it.first }
+                for ((mangaId, list) in grouped) {
+                    val manga = titles[mangaId] ?: continue
+                    Notifier.chapters(applicationContext, manga, list.map { it.second })
+                }
+            }
+            MangaLibrary.notified = notified
+            MangaLibrary.lastCheck = now
+            Result.success()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.retry()
+        }
+    }
+
+    companion object {
+        private const val NAME = "chapter-check"
+
+        fun schedule(ctx: Context) {
+            val request = PeriodicWorkRequestBuilder<ChapterCheckWorker>(2, TimeUnit.HOURS)
+                .setConstraints(networkConstraint)
+                .build()
+            WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+        }
+    }
+}
+
 /** Once a day at the chosen hour: what's coming out today from your watchlist. */
 class DigestWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
 
@@ -180,7 +238,7 @@ object Notifier {
             }
         )
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_NEWS, "Sequels and daily digest", NotificationManager.IMPORTANCE_LOW).apply {
+            NotificationChannel(CHANNEL_NEWS, "Sequels, chapters and digest", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "New seasons of your shows, and the morning rundown"
             }
         )
@@ -255,6 +313,26 @@ object Notifier {
             .setContentIntent(openIntent(ctx, DIGEST_ID, null))
             .build()
         post(ctx, DIGEST_ID, n)
+    }
+
+    fun chapters(ctx: Context, manga: Manga, chapters: List<Chapter>) {
+        val sorted = chapters.sortedBy { it.num }
+        val text = if (sorted.size == 1) {
+            val c = sorted[0]
+            listOfNotNull(c.label, c.title, c.group?.let { "by $it" }).joinToString(" · ")
+        } else "${sorted.size} new chapters: ${sorted.first().label} to ${sorted.last().label}"
+        val id = 200_000 + (manga.id.hashCode() and 0xFFFFF)
+        val intent = Intent(ctx, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(MainActivity.EXTRA_MANGA, manga.id)
+        }
+        val pending = PendingIntent.getActivity(ctx, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = base(ctx, CHANNEL_NEWS)
+            .setContentTitle("New chapter: ${manga.title}")
+            .setContentText(text)
+            .setContentIntent(pending)
+            .build()
+        post(ctx, id, n)
     }
 
     private fun post(ctx: Context, id: Int, n: Notification) {

@@ -18,6 +18,7 @@ object Watchlist {
     private const val KEY_LAST_CHECK = "last_check"
     private const val KEY_SEEN_SEQUELS = "seen_sequels"
     private const val KEY_LAST_SEQUEL_CHECK = "last_sequel_check"
+    private const val KEY_ACTIVE_DAYS = "active_days"
 
     private var prefs: SharedPreferences? = null
 
@@ -34,9 +35,10 @@ object Watchlist {
     private val _alerts = MutableStateFlow(true)
     val alerts: StateFlow<Boolean> = _alerts
 
+    /** [force] re-reads everything, used after importing from another phone. */
     @Synchronized
-    fun init(ctx: Context) {
-        if (prefs != null) return
+    fun init(ctx: Context, force: Boolean = false) {
+        if (prefs != null && !force) return
         val p = ctx.applicationContext.getSharedPreferences("simulcast", Context.MODE_PRIVATE)
         prefs = p
         _ids.value = p.intSet(KEY_IDS)
@@ -79,6 +81,20 @@ object Watchlist {
         if (watched <= 0) map.remove(id) else map[id] = watched
         _progress.value = map
         prefs?.edit()?.putStringSet(KEY_PROGRESS, map.map { "${it.key}:${it.value}" }.toSet())?.apply()
+        markActive()
+    }
+
+    /** Days (yyyy-mm-dd) you logged an episode or read a chapter. Used for the streak on the Stats page. */
+    val activeDays: Set<String>
+        get() = prefs?.getStringSet(KEY_ACTIVE_DAYS, emptySet()).orEmpty().toSet()
+
+    fun markActive() {
+        val today = java.time.LocalDate.now().toString()
+        val days = activeDays
+        if (today in days) return
+        // Keep about a year and a half of days.
+        val trimmed = (days + today).sorted().takeLast(550).toSet()
+        prefs?.edit()?.putStringSet(KEY_ACTIVE_DAYS, trimmed)?.apply()
     }
 
     fun setAlerts(on: Boolean) {

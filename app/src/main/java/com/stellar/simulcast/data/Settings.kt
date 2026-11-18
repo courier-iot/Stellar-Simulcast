@@ -70,6 +70,28 @@ data class DisplayPrefs(
     val englishLinksOnly: Boolean = false,
 )
 
+/** MangaDex content ratings, mildest first. The last two are 18+. */
+val CONTENT_RATINGS = listOf("safe", "suggestive", "erotica", "pornographic")
+val ADULT_RATINGS = setOf("erotica", "pornographic")
+
+/** Chapter languages offered in Settings (MangaDex language codes). */
+val MANGA_LANGUAGES = listOf(
+    "en" to "English", "es-la" to "Spanish (LatAm)", "es" to "Spanish", "pt-br" to "Portuguese (BR)",
+    "fr" to "French", "de" to "German", "it" to "Italian", "ru" to "Russian",
+    "id" to "Indonesian", "vi" to "Vietnamese", "ja" to "Japanese", "ko" to "Korean",
+)
+
+data class MangaPrefs(
+    /** When off, nothing about what you read is saved. */
+    val trackReading: Boolean = true,
+    val ratings: Set<String> = setOf("safe", "suggestive"),
+    val languages: Set<String> = setOf("en"),
+    val webtoon: Boolean = false,
+    val rtl: Boolean = true,
+    val dataSaver: Boolean = false,
+    val chapterAlerts: Boolean = true,
+)
+
 /**
  * Small settings kept on the phone alongside the watchlist.
  * Backed by Compose state so screens update the moment a setting changes.
@@ -85,13 +107,16 @@ object Settings {
         private set
     var display by mutableStateOf(DisplayPrefs())
         private set
+    var manga by mutableStateOf(MangaPrefs())
+        private set
 
     /** Stream delay in seconds, for time maths. */
     val delaySec: Long get() = display.streamDelayMin * 60L
 
+    /** [force] re-reads everything, used after importing from another phone. */
     @Synchronized
-    fun init(ctx: Context) {
-        if (prefs != null) return
+    fun init(ctx: Context, force: Boolean = false) {
+        if (prefs != null && !force) return
         val p = ctx.applicationContext.getSharedPreferences("simulcast", Context.MODE_PRIVATE)
         prefs = p
         titleLang = runCatching { TitleLang.valueOf(p.getString("title_lang", null) ?: "ENGLISH") }
@@ -120,6 +145,28 @@ object Settings {
             streamDelayMin = p.getInt("d_delay", 0),
             englishLinksOnly = p.getBoolean("d_en_links", false),
         )
+        manga = MangaPrefs(
+            trackReading = p.getBoolean("m_track", true),
+            ratings = p.getStringSet("m_ratings", null)?.toSet()?.takeIf { it.isNotEmpty() } ?: setOf("safe", "suggestive"),
+            languages = p.getStringSet("m_langs", null)?.toSet()?.takeIf { it.isNotEmpty() } ?: setOf("en"),
+            webtoon = p.getBoolean("m_webtoon", false),
+            rtl = p.getBoolean("m_rtl", true),
+            dataSaver = p.getBoolean("m_saver", false),
+            chapterAlerts = p.getBoolean("m_alerts", true),
+        )
+    }
+
+    fun updateManga(m: MangaPrefs) {
+        manga = m
+        prefs?.edit()
+            ?.putBoolean("m_track", m.trackReading)
+            ?.putStringSet("m_ratings", m.ratings)
+            ?.putStringSet("m_langs", m.languages)
+            ?.putBoolean("m_webtoon", m.webtoon)
+            ?.putBoolean("m_rtl", m.rtl)
+            ?.putBoolean("m_saver", m.dataSaver)
+            ?.putBoolean("m_alerts", m.chapterAlerts)
+            ?.apply()
     }
 
     fun updateTitleLang(lang: TitleLang) {

@@ -52,7 +52,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.stellar.simulcast.data.ADULT_RATINGS
+import com.stellar.simulcast.data.CONTENT_RATINGS
 import com.stellar.simulcast.data.FORMATS
+import com.stellar.simulcast.data.MANGA_LANGUAGES
+import com.stellar.simulcast.data.MangaLibrary
 import com.stellar.simulcast.data.Filters
 import com.stellar.simulcast.data.GENRES
 import com.stellar.simulcast.data.Load
@@ -269,6 +273,12 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                 }
             }
 
+            // ----- Manga -----
+            MangaSettings()
+
+            // ----- Move to another phone -----
+            Section("Move to another phone") { TransferSection() }
+
             // ----- Hidden shows -----
             Section("Hidden shows") {
                 if (hidden.isEmpty()) {
@@ -293,7 +303,7 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Stored on this phone: only show IDs (your watchlist, hidden shows and episode progress) and these settings. No show data is saved.",
+                    "Stored on this phone: only IDs and numbers (watchlist, hidden shows, episode progress, followed manga and reading spots) and these settings. No show or manga data is saved. Manga and chapters come live from MangaDex; translations are by the scanlation groups credited on each chapter.",
                     color = Space.Muted, fontSize = 13.sp,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -302,6 +312,89 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MangaSettings() {
+    val m = Settings.manga
+    var askAdult by remember { mutableStateOf<String?>(null) }
+    var askClear by remember { mutableStateOf(false) }
+
+    Section("Manga") {
+        ToggleRow(
+            "Track my reading",
+            "Remember the chapter and page you stopped on, and show new-chapter counts. Off means nothing about your reading is saved.",
+            m.trackReading,
+        ) { on ->
+            if (on) Settings.updateManga(m.copy(trackReading = true)) else askClear = true
+        }
+        ToggleRow("New chapter alerts", "Notify me when a manga I follow gets a chapter in my languages", m.chapterAlerts) {
+            Settings.updateManga(m.copy(chapterAlerts = it))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Chapter languages", color = Space.Text)
+        Spacer(Modifier.height(6.dp))
+        ChipGrid(MANGA_LANGUAGES.map { it.first }, m.languages, label = { code -> MANGA_LANGUAGES.first { it.first == code }.second }, perRow = 2) { code ->
+            val next = if (code in m.languages) m.languages - code else m.languages + code
+            if (next.isNotEmpty()) Settings.updateManga(m.copy(languages = next))
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Content ratings shown", color = Space.Text)
+        Text("MangaDex tags every series. The last two are adult content (18+).", color = Space.Muted, fontSize = 12.sp)
+        Spacer(Modifier.height(6.dp))
+        ChipGrid(CONTENT_RATINGS, m.ratings, label = { pretty(it) ?: it }, perRow = 2) { r ->
+            when {
+                r in m.ratings -> if (m.ratings.size > 1) Settings.updateManga(m.copy(ratings = m.ratings - r))
+                r in ADULT_RATINGS -> askAdult = r
+                else -> Settings.updateManga(m.copy(ratings = m.ratings + r))
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Reader", color = Space.Text)
+        ToggleRow("Scroll mode", "One long strip, best for webtoons. Off pages left and right.", m.webtoon) {
+            Settings.updateManga(m.copy(webtoon = it))
+        }
+        ToggleRow("Right to left", "Page the way Japanese manga is read", m.rtl) { Settings.updateManga(m.copy(rtl = it)) }
+        ToggleRow("Data saver", "Lower-quality pages to save mobile data", m.dataSaver) { Settings.updateManga(m.copy(dataSaver = it)) }
+    }
+
+    askAdult?.let { r ->
+        AlertDialog(
+            onDismissRequest = { askAdult = null },
+            containerColor = Space.Surface,
+            title = { Text("Adult content", color = Space.Magenta) },
+            text = { Text("\"${pretty(r)}\" manga is for adults only. Confirm you're 18 or older to show it.", color = Space.Text) },
+            confirmButton = {
+                TextButton(onClick = {
+                    Settings.updateManga(Settings.manga.copy(ratings = Settings.manga.ratings + r))
+                    askAdult = null
+                }) { Text("I'm 18 or older", color = Space.Magenta) }
+            },
+            dismissButton = { TextButton(onClick = { askAdult = null }) { Text("Cancel", color = Space.Muted) } },
+        )
+    }
+
+    if (askClear) {
+        AlertDialog(
+            onDismissRequest = { askClear = false },
+            containerColor = Space.Surface,
+            title = { Text("Stop tracking reading?", color = Space.Cyan) },
+            text = { Text("Your saved reading spots can be kept for later or deleted now. Followed manga stay either way.", color = Space.Text) },
+            confirmButton = {
+                TextButton(onClick = {
+                    MangaLibrary.clearAllMarks()
+                    Settings.updateManga(Settings.manga.copy(trackReading = false))
+                    askClear = false
+                }) { Text("Delete history", color = Space.Magenta) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    Settings.updateManga(Settings.manga.copy(trackReading = false))
+                    askClear = false
+                }) { Text("Keep it", color = Space.Cyan) }
+            },
+        )
     }
 }
 

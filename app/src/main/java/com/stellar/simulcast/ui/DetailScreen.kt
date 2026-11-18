@@ -54,6 +54,9 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,13 +78,15 @@ import com.stellar.simulcast.data.AniList
 import com.stellar.simulcast.data.AnimeDetail
 import com.stellar.simulcast.data.EpisodeInfo
 import com.stellar.simulcast.data.Load
+import com.stellar.simulcast.data.MangaDex
+import com.stellar.simulcast.data.Related
 import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.TimeText
 import com.stellar.simulcast.data.Watchlist
 import com.stellar.simulcast.data.attempt
 
 @Composable
-fun DetailScreen(id: Int, onBack: () -> Unit, open: (Int) -> Unit) {
+fun DetailScreen(id: Int, onBack: () -> Unit, open: (Int) -> Unit, openManga: (String) -> Unit) {
     var reload by remember { mutableIntStateOf(0) }
     val state by produceState<Load<AnimeDetail>>(Load.Loading, id, reload) {
         value = Load.Loading
@@ -101,7 +106,7 @@ fun DetailScreen(id: Int, onBack: () -> Unit, open: (Int) -> Unit) {
         when (val s = state) {
             Load.Loading -> LoadingView()
             is Load.Error -> ErrorView(s.message) { reload++ }
-            is Load.Ready -> DetailBody(s.data, now, open) { url -> runCatching { uri.openUri(url) } }
+            is Load.Ready -> DetailBody(s.data, now, open, openManga) { url -> runCatching { uri.openUri(url) } }
         }
         IconButton(
             onClick = onBack,
@@ -117,7 +122,7 @@ fun DetailScreen(id: Int, onBack: () -> Unit, open: (Int) -> Unit) {
 }
 
 @Composable
-private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openUrl: (String) -> Unit) {
+private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga: (String) -> Unit, openUrl: (String) -> Unit) {
     val a = d.anime
     val ctx = LocalContext.current
     val watch = LocalWatch.current
@@ -129,6 +134,28 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openUrl: 
     var allEpisodes by remember { mutableStateOf(false) }
 
     if (showQr) QrDialog(a) { showQr = false }
+
+    // Manga on AniList -> the same series on MangaDex, so it opens in the in-app reader.
+    val scope = rememberCoroutineScope()
+    var finding by remember { mutableStateOf(false) }
+    val sourceManga = d.related.firstOrNull { it.relation.startsWith("Source") && it.relation.endsWith("(manga)") }
+        ?: d.related.firstOrNull { it.relation.endsWith("(manga)") }
+    val readManga: (Related) -> Unit = { r ->
+        if (!finding) {
+            finding = true
+            Toast.makeText(ctx, "Looking for it on MangaDex…", Toast.LENGTH_SHORT).show()
+            scope.launch {
+                val titles = listOfNotNull(r.anime.romaji, r.anime.english)
+                val found = runCatching { MangaDex.findByAniList(r.anime.id, titles) }.getOrNull()
+                finding = false
+                if (found != null) openManga(found.id)
+                else {
+                    Toast.makeText(ctx, "Not on MangaDex, opening AniList instead", Toast.LENGTH_SHORT).show()
+                    openUrl(showUrl(r.anime))
+                }
+            }
+        }
+    }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
         // Banner + poster
@@ -213,6 +240,21 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openUrl: 
             }
         }
 
+        if (sourceManga != null) {
+            item {
+                OutlinedButton(
+                    onClick = { readManga(sourceManga) },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                ) {
+                    Icon(Icons.AutoMirrored.Rounded.MenuBook, contentDescription = null, tint = Space.Magenta)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Read the manga", color = Space.Text, modifier = Modifier.weight(1f))
+                    Text(sourceManga.anime.name(lang), color = Space.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f))
+                }
+            }
+        }
+
         // Next episode, breaks, finish estimate, calendar
         item { NextEpisodePanel(d, now) }
 
@@ -241,6 +283,11 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openUrl: 
                             Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Space.Cyan)
                             Spacer(Modifier.width(8.dp))
                             Text(link.site, color = Space.Text, modifier = Modifier.weight(1f))
+                            if (isFreeService(link.site)) {
+                                Text("FREE", color = Space.Bg, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(Space.Magenta).padding(horizontal = 5.dp, vertical = 1.dp))
+                                Spacer(Modifier.width(6.dp))
+                            }
                             link.language?.let { Text(it, color = Space.Muted, fontSize = 12.sp) }
                             Spacer(Modifier.width(6.dp))
                             Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, tint = Space.Muted, modifier = Modifier.size(16.dp))
@@ -318,7 +365,7 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openUrl: 
                             val isManga = r.relation.endsWith("(manga)")
                             Column(
                                 Modifier.width(104.dp).clickable {
-                                    if (isManga) openUrl(showUrl(r.anime)) else open(r.anime.id)
+                                    if (isManga) readManga(r) else open(r.anime.id)
                                 }
                             ) {
                                 Poster(r.anime.cover, Modifier.fillMaxWidth().aspectRatio(0.7f))
@@ -346,6 +393,11 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openUrl: 
         }
     }
 }
+
+/** Services with free, legal, ad-supported anime. Only shown when AniList lists the show there. */
+private val FREE_SERVICES = listOf("youtube", "tubi", "pluto", "retrocrunch", "bilibili")
+
+private fun isFreeService(site: String): Boolean = FREE_SERVICES.any { site.lowercase().contains(it) }
 
 /** The few episodes around where you are, so the list stays short. */
 private fun episodeWindow(list: List<EpisodeInfo>, watched: Int): List<EpisodeInfo> {

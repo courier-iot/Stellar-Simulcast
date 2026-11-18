@@ -11,6 +11,9 @@ An anime release tracker for Android with a neon space look. All show data comes
 
 Show pages have a countdown, break notices, a finish-date estimate, add-to-calendar, a trailer, streaming links, an episode list, cast, related shows and source material, a score trend, sharing (link or QR), and hide.
 
+## Manga
+An Anime | Manga switch in the header. Manga mode has Latest, Browse, Search and Library tabs, with an in-app reader for MangaDex chapters (page or scroll mode, right-to-left, zoom, data saver). Reading tracking can be turned off in Settings. Manga data and chapters come live from MangaDex, and every chapter credits its translation group.
+
 ## Releases
 Push to `main` and GitHub Actions builds a signed APK and publishes a release tagged and titled `vX.Y.Z`.
 The version comes from `val appVersion` in `app/build.gradle.kts`.

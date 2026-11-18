@@ -170,6 +170,31 @@ object AniList {
         """
     )
 
+    private val MANGA_ADAPTATIONS = gql(
+        """
+        query (%id: Int) {
+          Media(id: %id, type: MANGA) {
+            relations {
+              edges {
+                relationType(version: 2)
+                node { type $MEDIA }
+              }
+            }
+          }
+        }
+        """
+    )
+
+    /** Anime made from an AniList manga (used for "Watch the anime" on manga pages). */
+    suspend fun animeForManga(aniListMangaId: Int): List<Anime> {
+        val m = post(MANGA_ADAPTATIONS, JSONObject().put("id", aniListMangaId)).getJSONObject("Media")
+        return m.optJSONObject("relations")?.optJSONArray("edges").objects()
+            .mapNotNull { e -> e.optJSONObject("node")?.takeIf { it.optString("type") == "ANIME" } }
+            .map { parseAnime(it) }
+            .filter { !it.isAdult }
+            .distinctBy { it.id }
+    }
+
     private suspend fun post(query: String, vars: JSONObject): JSONObject = withContext(Dispatchers.IO) {
         val body = JSONObject().put("query", query).put("variables", vars).toString().toRequestBody(jsonType)
         val request = Request.Builder()

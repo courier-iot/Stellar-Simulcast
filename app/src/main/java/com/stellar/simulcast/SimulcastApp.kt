@@ -1,8 +1,10 @@
 package com.stellar.simulcast
 
 import android.app.Application
+import com.stellar.simulcast.data.MangaLibrary
 import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.Watchlist
+import com.stellar.simulcast.work.ChapterCheckWorker
 import com.stellar.simulcast.work.DigestWorker
 import com.stellar.simulcast.work.EpisodeCheckWorker
 import com.stellar.simulcast.work.Notifier
@@ -12,8 +14,10 @@ class SimulcastApp : Application() {
         super.onCreate()
         Watchlist.init(this)
         Settings.init(this)
+        MangaLibrary.init(this)
         Notifier.createChannels(this)
         EpisodeCheckWorker.schedule(this, Settings.alertPrefs.intervalMin)
         DigestWorker.schedule(this, Settings.alertPrefs)
+        ChapterCheckWorker.schedule(this)
     }
 }

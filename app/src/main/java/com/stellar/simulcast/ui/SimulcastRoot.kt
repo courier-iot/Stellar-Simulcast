@@ -6,6 +6,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.rounded.CollectionsBookmark
+import androidx.compose.material.icons.rounded.Insights
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -56,6 +62,15 @@ import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.Watchlist
 import com.stellar.simulcast.work.Notifier
 
+enum class Mode { ANIME, MANGA }
+
+enum class MangaTab(val label: String, val icon: ImageVector) {
+    LATEST("Latest", Icons.Rounded.NewReleases),
+    BROWSE("Browse", Icons.Rounded.AutoAwesome),
+    SEARCH("Search", Icons.Rounded.Search),
+    LIBRARY("Library", Icons.Rounded.CollectionsBookmark),
+}
+
 enum class Tab(val label: String, val icon: ImageVector) {
     SCHEDULE("Schedule", Icons.Rounded.CalendarMonth),
     AIRED("Just aired", Icons.Rounded.NewReleases),
@@ -65,8 +80,15 @@ enum class Tab(val label: String, val icon: ImageVector) {
 }
 
 @Composable
-fun SimulcastRoot(openAnime: MutableState<Int?>) {
+fun SimulcastRoot(openAnime: MutableState<Int?>, openManga: MutableState<String?>) {
     val vm: AppViewModel = viewModel()
+    val mvm: MangaViewModel = viewModel()
+    val uri = LocalUriHandler.current
+    var mode by rememberSaveable { mutableStateOf(Mode.ANIME) }
+    var mangaTab by rememberSaveable { mutableStateOf(MangaTab.LATEST) }
+    var showStats by rememberSaveable { mutableStateOf(false) }
+    // Reader target saved as "mangaId|chapterId|page" so it survives rotation.
+    var reading by rememberSaveable { mutableStateOf<String?>(null) }
     val ctx = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(Tab.SCHEDULE) }
     var showFilters by rememberSaveable { mutableStateOf(false) }
@@ -84,9 +106,16 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
         }
     }
     val open: (Int) -> Unit = { openAnime.value = it }
+    val openMangaPage: (String) -> Unit = { openManga.value = it }
+    val read: ReadAction = { m, c, p -> reading = "$m|$c|$p" }
+    val openUrl: (String) -> Unit = { runCatching { uri.openUri(it) } }
     val filters = Settings.filters
+    val mangaPrefs = Settings.manga
 
     LaunchedEffect(filters) { vm.applyFilters(filters) }
+    LaunchedEffect(mangaPrefs) { mvm.applyPrefs(mangaPrefs) }
+    // A manga notification should land in manga mode.
+    LaunchedEffect(openManga.value) { if (openManga.value != null) mode = Mode.MANGA }
 
     // "Larger text" scales every font in the app by 15%.
     val density = LocalDensity.current
@@ -102,39 +131,64 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
                 containerColor = Color.Transparent,
                 topBar = {
                     Header(
+                        mode = mode,
+                        onMode = { mode = it },
                         filterCount = filters.count,
-                        showFilter = tab != Tab.WATCH,
+                        showFilter = mode == Mode.ANIME && tab != Tab.WATCH,
                         onFilters = { showFilters = true },
+                        onStats = { showStats = true },
                         onSettings = { showSettings = true },
                     )
                 },
                 bottomBar = {
                     NavigationBar(containerColor = Space.Surface.copy(alpha = 0.94f)) {
-                        Tab.entries.forEach { t ->
-                            NavigationBarItem(
-                                selected = tab == t,
-                                onClick = { tab = t },
-                                icon = { Icon(t.icon, contentDescription = null) },
-                                label = { Text(t.label, fontSize = 10.sp, maxLines = 1) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Space.Cyan,
-                                    selectedTextColor = Space.Cyan,
-                                    indicatorColor = Space.Cyan.copy(alpha = 0.14f),
-                                    unselectedIconColor = Space.Muted,
-                                    unselectedTextColor = Space.Muted,
-                                ),
-                            )
+                        val colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Space.Cyan,
+                            selectedTextColor = Space.Cyan,
+                            indicatorColor = Space.Cyan.copy(alpha = 0.14f),
+                            unselectedIconColor = Space.Muted,
+                            unselectedTextColor = Space.Muted,
+                        )
+                        if (mode == Mode.ANIME) {
+                            Tab.entries.forEach { t ->
+                                NavigationBarItem(
+                                    selected = tab == t,
+                                    onClick = { tab = t },
+                                    icon = { Icon(t.icon, contentDescription = null) },
+                                    label = { Text(t.label, fontSize = 10.sp, maxLines = 1) },
+                                    colors = colors,
+                                )
+                            }
+                        } else {
+                            MangaTab.entries.forEach { t ->
+                                NavigationBarItem(
+                                    selected = mangaTab == t,
+                                    onClick = { mangaTab = t },
+                                    icon = { Icon(t.icon, contentDescription = null) },
+                                    label = { Text(t.label, fontSize = 10.sp, maxLines = 1) },
+                                    colors = colors,
+                                )
+                            }
                         }
                     }
                 },
             ) { pad ->
                 Box(Modifier.padding(pad).fillMaxSize()) {
-                    when (tab) {
-                        Tab.SCHEDULE -> ScheduleScreen(vm, open)
-                        Tab.AIRED -> JustAiredScreen(vm, open)
-                        Tab.BROWSE -> BrowseScreen(vm, open)
-                        Tab.SEARCH -> SearchScreen(vm, open)
-                        Tab.WATCH -> WatchlistScreen(vm, open)
+                    if (mode == Mode.ANIME) {
+                        when (tab) {
+                            Tab.SCHEDULE -> ScheduleScreen(vm, open)
+                            Tab.AIRED -> JustAiredScreen(vm, open)
+                            Tab.BROWSE -> BrowseScreen(vm, open)
+                            Tab.SEARCH -> SearchScreen(vm, open)
+                            Tab.WATCH -> WatchlistScreen(vm, open)
+                        }
+                    } else {
+                        when (mangaTab) {
+                            MangaTab.LATEST -> MangaLatestScreen(mvm, openMangaPage, read, openUrl)
+                            MangaTab.BROWSE -> MangaBrowseScreen(mvm, openMangaPage)
+                            MangaTab.SEARCH -> MangaSearchScreen(mvm, openMangaPage)
+                            MangaTab.LIBRARY -> MangaLibraryScreen(mvm, openMangaPage, read)
+                        }
                     }
                 }
             }
@@ -144,10 +198,28 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
                 SettingsScreen(vm, onBack = { showSettings = false }, open = open)
             }
 
+            if (showStats) {
+                BackHandler { showStats = false }
+                StatsScreen(onBack = { showStats = false })
+            }
+
+            val mangaId = openManga.value
+            if (mangaId != null) {
+                BackHandler { openManga.value = null }
+                MangaDetailScreen(mangaId, onBack = { openManga.value = null }, read = read, openAnime = open)
+            }
+
+            // An anime page can be opened from a manga page, so it sits above it.
             val detailId = openAnime.value
             if (detailId != null) {
                 BackHandler { openAnime.value = null }
-                DetailScreen(detailId, onBack = { openAnime.value = null }, open = open)
+                DetailScreen(detailId, onBack = { openAnime.value = null }, open = open, openManga = openMangaPage)
+            }
+
+            val r = reading?.split("|")
+            if (r != null && r.size == 3) {
+                BackHandler { reading = null }
+                ReaderScreen(r[0], r[1], r[2].toIntOrNull() ?: 0, onClose = { reading = null })
             }
 
             if (showFilters) FilterDialog(onDismiss = { showFilters = false })
@@ -156,7 +228,15 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
 }
 
 @Composable
-private fun Header(filterCount: Int, showFilter: Boolean, onFilters: () -> Unit, onSettings: () -> Unit) {
+private fun Header(
+    mode: Mode,
+    onMode: (Mode) -> Unit,
+    filterCount: Int,
+    showFilter: Boolean,
+    onFilters: () -> Unit,
+    onStats: () -> Unit,
+    onSettings: () -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().statusBarsPadding().padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -164,13 +244,14 @@ private fun Header(filterCount: Int, showFilter: Boolean, onFilters: () -> Unit,
         Column(Modifier.weight(1f)) {
             Text(
                 "STELLAR", color = Space.Cyan, fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold, fontSize = 22.sp, letterSpacing = 6.sp,
+                fontWeight = FontWeight.Bold, fontSize = 18.sp, letterSpacing = 4.sp,
             )
             Text(
                 "SIMULCAST", color = Space.Magenta, fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp, letterSpacing = 8.sp,
+                fontSize = 10.sp, letterSpacing = 5.sp,
             )
         }
+        ModeSwitch(mode, onMode)
         if (showFilter) {
             IconButton(onClick = onFilters) {
                 Box {
@@ -192,8 +273,34 @@ private fun Header(filterCount: Int, showFilter: Boolean, onFilters: () -> Unit,
                 }
             }
         }
+        IconButton(onClick = onStats) {
+            Icon(Icons.Rounded.Insights, contentDescription = "Stats", tint = Space.Cyan)
+        }
         IconButton(onClick = onSettings) {
             Icon(Icons.Rounded.SettingsIcon, contentDescription = "Settings", tint = Space.Cyan)
+        }
+    }
+}
+
+@Composable
+private fun ModeSwitch(mode: Mode, onMode: (Mode) -> Unit) {
+    val shape = RoundedCornerShape(50)
+    Row(
+        Modifier.clip(shape).background(Space.Card).border(1.dp, Space.Cyan.copy(alpha = 0.4f), shape).padding(2.dp),
+    ) {
+        Mode.entries.forEach { m ->
+            val on = m == mode
+            Text(
+                if (m == Mode.ANIME) "Anime" else "Manga",
+                color = if (on) Space.Bg else Space.Muted,
+                fontSize = 12.sp,
+                fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                modifier = Modifier
+                    .clip(shape)
+                    .background(if (on) Space.Cyan else Color.Transparent)
+                    .clickable { onMode(m) }
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            )
         }
     }
 }
