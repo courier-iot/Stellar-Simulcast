@@ -19,6 +19,8 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # GitHub's Ubuntu runners already include the Android SDK, so no extra setup step is needed.
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
@@ -29,8 +31,28 @@ jobs:
           V=$(grep -oP 'val appVersion = "\K[^"]+' app/build.gradle.kts)
           echo "tag=v$V" >> "$GITHUB_OUTPUT"
 
+      # The signing key lives only in GitHub secrets (Settings → Secrets and variables → Actions).
+      - name: Decode signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::The SIGNING_KEYSTORE_BASE64 secret is missing. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
       - name: Build release APK
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Remove key file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
 
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk "StellarSimulcast-${{ steps.ver.outputs.tag }}.apk"
