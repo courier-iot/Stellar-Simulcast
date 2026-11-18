@@ -94,10 +94,10 @@ fun FilterDialog(onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = { Settings.setFilters(draft); onDismiss() }) { Text("Apply", color = Space.Cyan) }
+            TextButton(onClick = { Settings.updateFilters(draft); onDismiss() }) { Text("Apply", color = Space.Cyan) }
         },
         dismissButton = {
-            TextButton(onClick = { Settings.setFilters(Filters()); onDismiss() }) { Text("Clear all", color = Space.Magenta) }
+            TextButton(onClick = { Settings.updateFilters(Filters()); onDismiss() }) { Text("Clear all", color = Space.Magenta) }
         },
     )
 }
@@ -154,7 +154,7 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                                         if (selected) p.primary else Space.Muted.copy(alpha = 0.3f),
                                         RoundedCornerShape(12.dp),
                                     )
-                                    .clickable { Settings.setDisplay(display.copy(accent = p.id)) }
+                                    .clickable { Settings.updateDisplay(display.copy(accent = p.id)) }
                                     .padding(vertical = 10.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
@@ -177,19 +177,19 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                     setOf(lang.name),
                     label = { if (it == "ENGLISH") "English" else "Japanese (romaji)" },
                     perRow = 2,
-                ) { Settings.setTitleLang(TitleLang.valueOf(it)) }
+                ) { Settings.updateTitleLang(TitleLang.valueOf(it)) }
                 Spacer(Modifier.height(10.dp))
                 ToggleRow("24-hour clock", "Show 21:30 instead of 9:30 PM", display.use24h) {
-                    Settings.setDisplay(display.copy(use24h = it))
+                    Settings.updateDisplay(display.copy(use24h = it))
                 }
                 ToggleRow("Larger text", "Bump all text up a size", display.largeText) {
-                    Settings.setDisplay(display.copy(largeText = it))
+                    Settings.updateDisplay(display.copy(largeText = it))
                 }
                 ToggleRow("Compact lists", "Smaller rows so more fit on screen", display.compact) {
-                    Settings.setDisplay(display.copy(compact = it))
+                    Settings.updateDisplay(display.copy(compact = it))
                 }
                 ToggleRow("Spoiler-safe", "Hide synopses and episode titles until you tap them", display.spoilerSafe) {
-                    Settings.setDisplay(display.copy(spoilerSafe = it))
+                    Settings.updateDisplay(display.copy(spoilerSafe = it))
                 }
             }
 
@@ -213,13 +213,13 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                             else -> "+${v / 60}h"
                         }
                     },
-                ) { Settings.setDisplay(display.copy(streamDelayMin = it.toInt())) }
+                ) { Settings.updateDisplay(display.copy(streamDelayMin = it.toInt())) }
                 Spacer(Modifier.height(10.dp))
                 ToggleRow(
                     "English links only",
                     "On show pages, only list streams AniList marks as English. AniList doesn't track which country a service works in, so this is the closest match.",
                     display.englishLinksOnly,
-                ) { Settings.setDisplay(display.copy(englishLinksOnly = it)) }
+                ) { Settings.updateDisplay(display.copy(englishLinksOnly = it)) }
             }
 
             // ----- Alerts -----
@@ -235,7 +235,7 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                     perRow = 4,
                 ) {
                     val next = prefs.copy(intervalMin = it.toInt())
-                    Settings.setAlertPrefs(next)
+                    Settings.updateAlertPrefs(next)
                     EpisodeCheckWorker.schedule(ctx, next.intervalMin, replace = true)
                 }
                 Text(
@@ -243,29 +243,29 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                     color = Space.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp, bottom = 6.dp),
                 )
                 ToggleRow("Group alerts", "One notification when several episodes come out together", prefs.grouped) {
-                    Settings.setAlertPrefs(prefs.copy(grouped = it))
+                    Settings.updateAlertPrefs(prefs.copy(grouped = it))
                 }
                 ToggleRow("Sequel alerts", "Tell me when a starred show gets a new season or an air date", prefs.sequels) {
-                    Settings.setAlertPrefs(prefs.copy(sequels = it))
+                    Settings.updateAlertPrefs(prefs.copy(sequels = it))
                 }
                 ToggleRow("Daily digest", "One morning notification with what's out today", prefs.digest) {
                     val next = prefs.copy(digest = it)
-                    Settings.setAlertPrefs(next)
+                    Settings.updateAlertPrefs(next)
                     DigestWorker.schedule(ctx, next, replace = true)
                 }
                 if (prefs.digest) {
                     HourStepper("At", prefs.digestHour) {
                         val next = prefs.copy(digestHour = it)
-                        Settings.setAlertPrefs(next)
+                        Settings.updateAlertPrefs(next)
                         DigestWorker.schedule(ctx, next, replace = true)
                     }
                 }
                 ToggleRow("Quiet hours", "Hold alerts overnight and deliver them after", prefs.quiet) {
-                    Settings.setAlertPrefs(prefs.copy(quiet = it))
+                    Settings.updateAlertPrefs(prefs.copy(quiet = it))
                 }
                 if (prefs.quiet) {
-                    HourStepper("From", prefs.quietStart) { Settings.setAlertPrefs(prefs.copy(quietStart = it)) }
-                    HourStepper("Until", prefs.quietEnd) { Settings.setAlertPrefs(prefs.copy(quietEnd = it)) }
+                    HourStepper("From", prefs.quietStart) { Settings.updateAlertPrefs(prefs.copy(quietStart = it)) }
+                    HourStepper("Until", prefs.quietEnd) { Settings.updateAlertPrefs(prefs.copy(quietEnd = it)) }
                 }
             }
 

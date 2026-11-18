@@ -122,12 +122,12 @@ object Settings {
         )
     }
 
-    fun setTitleLang(lang: TitleLang) {
+    fun updateTitleLang(lang: TitleLang) {
         titleLang = lang
         prefs?.edit()?.putString("title_lang", lang.name)?.apply()
     }
 
-    fun setFilters(f: Filters) {
+    fun updateFilters(f: Filters) {
         filters = f
         prefs?.edit()
             ?.putStringSet("f_services", f.services)
@@ -136,7 +136,7 @@ object Settings {
             ?.apply()
     }
 
-    fun setAlertPrefs(a: AlertPrefs) {
+    fun updateAlertPrefs(a: AlertPrefs) {
         alertPrefs = a
         prefs?.edit()
             ?.putInt("a_interval", a.intervalMin)
@@ -150,7 +150,7 @@ object Settings {
             ?.apply()
     }
 
-    fun setDisplay(d: DisplayPrefs) {
+    fun updateDisplay(d: DisplayPrefs) {
         display = d
         prefs?.edit()
             ?.putString("d_accent", d.accent)
