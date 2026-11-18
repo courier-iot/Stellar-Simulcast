@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stellar.simulcast.data.SeasonKey
+import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.Watchlist
 import com.stellar.simulcast.work.Notifier
 
@@ -52,6 +53,7 @@ import com.stellar.simulcast.work.Notifier
 fun SeasonScreen(vm: AppViewModel, open: (Int) -> Unit) {
     val key by vm.seasonKey.collectAsStateWithLifecycle()
     val state by vm.season.collectAsStateWithLifecycle()
+    val filters by Settings.filters.collectAsStateWithLifecycle()
     val now = rememberNow()
     LaunchedEffect(Unit) { if (vm.season.value.items.isEmpty()) vm.loadMoreSeason() }
 
@@ -84,7 +86,7 @@ fun SeasonScreen(vm: AppViewModel, open: (Int) -> Unit) {
                 contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                items(state.items, key = { it.id }) { a ->
+                items(state.items.filter { filters.matches(it) }, key = { it.id }) { a ->
                     PosterTile(a, now) { open(a.id) }
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) {
@@ -101,6 +103,7 @@ fun SeasonScreen(vm: AppViewModel, open: (Int) -> Unit) {
 fun SearchScreen(vm: AppViewModel, open: (Int) -> Unit) {
     val query by vm.query.collectAsStateWithLifecycle()
     val state by vm.search.collectAsStateWithLifecycle()
+    val filters by Settings.filters.collectAsStateWithLifecycle()
     val now = rememberNow()
 
     Column(Modifier.fillMaxSize()) {
@@ -131,9 +134,9 @@ fun SearchScreen(vm: AppViewModel, open: (Int) -> Unit) {
             query.isBlank() -> EmptyView("Scan the airwaves", "Find any show to see when its next episode lands and where to watch it.")
             state.items.isEmpty() && state.loading -> LoadingView()
             state.items.isEmpty() && state.error != null -> ErrorView(state.error ?: "") { vm.setQuery(query) }
-            state.items.isEmpty() -> EmptyView("No matches", "Try the Japanese or English title.")
+            state.items.isEmpty() -> EmptyView("No matches", if (filters.active) "Try clearing some filters." else "Try the Japanese or English title.")
             else -> LazyColumn(contentPadding = PaddingValues(vertical = 6.dp)) {
-                items(state.items, key = { it.id }) { a ->
+                items(state.items.filter { filters.matches(it) }, key = { it.id }) { a ->
                     AnimeRow(
                         a,
                         headline = airingHeadline(a, now),

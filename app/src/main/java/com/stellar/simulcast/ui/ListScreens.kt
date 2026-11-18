@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stellar.simulcast.data.Load
+import com.stellar.simulcast.data.Settings
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -43,6 +44,7 @@ fun ScheduleScreen(vm: AppViewModel, open: (Int) -> Unit) {
     val state by vm.schedule.collectAsStateWithLifecycle()
     val watch = LocalWatch.current
     var onlyWatch by rememberSaveable { mutableStateOf(false) }
+    val filters by Settings.filters.collectAsStateWithLifecycle()
     var dayIndex by rememberSaveable { mutableStateOf(0) }
     val now = rememberNow()
     val zone = ZoneId.systemDefault()
@@ -56,7 +58,7 @@ fun ScheduleScreen(vm: AppViewModel, open: (Int) -> Unit) {
             Load.Loading -> LoadingView()
             is Load.Error -> ErrorView(s.message) { vm.loadSchedule(force = true) }
             is Load.Ready -> {
-                val eps = if (onlyWatch) s.data.filter { it.anime.id in watch.ids } else s.data
+                val eps = s.data.filter { (!onlyWatch || it.anime.id in watch.ids) && filters.matches(it.anime) }
                 val byDay = eps.groupBy { Instant.ofEpochSecond(it.airingAt).atZone(zone).toLocalDate() }
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 12.dp),
@@ -76,7 +78,11 @@ fun ScheduleScreen(vm: AppViewModel, open: (Int) -> Unit) {
                 if (list.isEmpty()) {
                     EmptyView(
                         "Nothing on this day",
-                        if (onlyWatch) "None of your starred shows air today." else "No episodes are scheduled.",
+                        when {
+                            onlyWatch -> "None of your starred shows air on this day."
+                            filters.active -> "Nothing matches your filters on this day."
+                            else -> "No episodes are scheduled."
+                        },
                     )
                 } else {
                     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
@@ -125,6 +131,7 @@ fun JustAiredScreen(vm: AppViewModel, open: (Int) -> Unit) {
     val state by vm.recent.collectAsStateWithLifecycle()
     val watch = LocalWatch.current
     var onlyWatch by rememberSaveable { mutableStateOf(false) }
+    val filters by Settings.filters.collectAsStateWithLifecycle()
     val now = rememberNow()
 
     Column(Modifier.fillMaxSize()) {
@@ -135,9 +142,9 @@ fun JustAiredScreen(vm: AppViewModel, open: (Int) -> Unit) {
             Load.Loading -> LoadingView()
             is Load.Error -> ErrorView(s.message) { vm.loadRecent(force = true) }
             is Load.Ready -> {
-                val eps = if (onlyWatch) s.data.filter { it.anime.id in watch.ids } else s.data
+                val eps = s.data.filter { (!onlyWatch || it.anime.id in watch.ids) && filters.matches(it.anime) }
                 if (eps.isEmpty()) {
-                    EmptyView("All quiet", "No new episodes in the last two days.")
+                    EmptyView("All quiet", if (filters.active) "Nothing matches your filters in the last two days." else "No new episodes in the last two days.")
                 } else {
                     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
                         items(eps, key = { it.id }) { ep ->

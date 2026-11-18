@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.stellar.simulcast.data.Anime
+import com.stellar.simulcast.data.TitleLang
 import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
@@ -58,6 +59,46 @@ import kotlin.random.Random
 data class WatchActions(val ids: Set<Int>, val toggle: (Int) -> Unit)
 
 val LocalWatch = compositionLocalOf { WatchActions(emptySet()) {} }
+
+val LocalTitleLang = compositionLocalOf { TitleLang.ENGLISH }
+
+/** Chips laid out in rows of [perRow], each row sharing the width evenly. */
+@Composable
+fun ChipGrid(options: List<String>, selected: Set<String>, label: (String) -> String = { it }, perRow: Int = 3, onToggle: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        options.chunked(perRow).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { opt ->
+                    Box(Modifier.weight(1f)) {
+                        GridChip(label(opt), opt in selected) { onToggle(opt) }
+                    }
+                }
+                repeat(perRow - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GridChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(10.dp)
+    Text(
+        text,
+        color = if (selected) Space.Bg else Space.Text,
+        fontSize = 12.sp,
+        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(if (selected) Space.Cyan else Space.Card)
+            .border(1.dp, (if (selected) Space.Cyan else Space.Muted).copy(alpha = 0.5f), shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+    )
+}
 
 // ---------- time helpers ----------
 
@@ -216,7 +257,7 @@ fun AnimeRow(
                 fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1,
             )
             Text(
-                anime.title, color = Space.Text, style = MaterialTheme.typography.titleSmall,
+                anime.name(LocalTitleLang.current), color = Space.Text, style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
             val meta = metaLine(anime)
@@ -256,7 +297,7 @@ fun PosterTile(anime: Anime, now: Long, onClick: () -> Unit) {
             }
         }
         Text(
-            anime.title, color = Space.Text, style = MaterialTheme.typography.labelMedium,
+            anime.name(LocalTitleLang.current), color = Space.Text, style = MaterialTheme.typography.labelMedium,
             maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp),
         )
     }

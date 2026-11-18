@@ -4,8 +4,9 @@ import java.time.LocalDate
 
 data class Anime(
     val id: Int,
-    val title: String,
+    val english: String?,
     val romaji: String?,
+    val services: List<String>,
     val cover: String?,
     val format: String?,
     val episodes: Int?,
@@ -16,7 +17,18 @@ data class Anime(
     val nextAiringAt: Long?,
     val siteUrl: String?,
     val isAdult: Boolean,
-)
+) {
+    fun name(lang: TitleLang): String = when (lang) {
+        TitleLang.ENGLISH -> english ?: romaji
+        TitleLang.ROMAJI -> romaji ?: english
+    } ?: "Untitled"
+
+    /** The other-language title, if it's different. */
+    fun altName(lang: TitleLang): String? {
+        val other = if (lang == TitleLang.ENGLISH) romaji else english
+        return other?.takeIf { it != name(lang) }
+    }
+}
 
 data class AiringEp(val id: Int, val episode: Int, val airingAt: Long, val anime: Anime)
 

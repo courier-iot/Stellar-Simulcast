@@ -129,8 +129,9 @@ private fun DetailBody(d: AnimeDetail, now: Long, openUrl: (String) -> Unit) {
         // Titles
         item {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Text(a.title, color = Space.Text, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                a.romaji?.let { Text(it, color = Space.Muted, style = MaterialTheme.typography.bodyMedium) }
+                val lang = LocalTitleLang.current
+                Text(a.name(lang), color = Space.Text, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                a.altName(lang)?.let { Text(it, color = Space.Muted, style = MaterialTheme.typography.bodyMedium) }
                 Spacer(Modifier.height(10.dp))
                 val chips = listOfNotNull(
                     formatLabel(a.format),

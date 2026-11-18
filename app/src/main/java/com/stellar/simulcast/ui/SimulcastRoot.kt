@@ -42,6 +42,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.rounded.FilterList
+import androidx.compose.material.icons.rounded.Settings as SettingsIcon
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.draw.clip
+import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.Watchlist
 import com.stellar.simulcast.work.Notifier
 
@@ -69,13 +78,29 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
         }
     }
     val open: (Int) -> Unit = { openAnime.value = it }
+    val lang by Settings.titleLang.collectAsStateWithLifecycle()
+    val filters by Settings.filters.collectAsStateWithLifecycle()
+    var showFilters by rememberSaveable { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
 
-    CompositionLocalProvider(LocalWatch provides WatchActions(ids, toggle)) {
+    LaunchedEffect(filters) { vm.applyFilters(filters) }
+
+    CompositionLocalProvider(
+        LocalWatch provides WatchActions(ids, toggle),
+        LocalTitleLang provides lang,
+    ) {
         Box(Modifier.fillMaxSize()) {
             Starfield()
             Scaffold(
                 containerColor = Color.Transparent,
-                topBar = { Header() },
+                topBar = {
+                    Header(
+                        filterCount = filters.count,
+                        showFilter = tab != Tab.WATCH,
+                        onFilters = { showFilters = true },
+                        onSettings = { showSettings = true },
+                    )
+                },
                 bottomBar = {
                     NavigationBar(containerColor = Space.Surface.copy(alpha = 0.94f)) {
                         Tab.entries.forEach { t ->
@@ -107,22 +132,29 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
                 }
             }
 
+            if (showSettings) {
+                BackHandler { showSettings = false }
+                SettingsScreen(onBack = { showSettings = false })
+            }
+
             val detailId = openAnime.value
             if (detailId != null) {
                 BackHandler { openAnime.value = null }
                 DetailScreen(detailId, onBack = { openAnime.value = null })
             }
+
+            if (showFilters) FilterDialog(onDismiss = { showFilters = false })
         }
     }
 }
 
 @Composable
-private fun Header() {
+private fun Header(filterCount: Int, showFilter: Boolean, onFilters: () -> Unit, onSettings: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.Bottom,
+        Modifier.fillMaxWidth().statusBarsPadding().padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column {
+        Column(Modifier.weight(1f)) {
             Text(
                 "STELLAR", color = Space.Cyan, fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold, fontSize = 22.sp, letterSpacing = 6.sp,
@@ -131,6 +163,30 @@ private fun Header() {
                 "SIMULCAST", color = Space.Magenta, fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp, letterSpacing = 8.sp,
             )
+        }
+        if (showFilter) {
+            IconButton(onClick = onFilters) {
+                Box {
+                    Icon(
+                        Icons.Rounded.FilterList, contentDescription = "Filters",
+                        tint = if (filterCount > 0) Space.Magenta else Space.Cyan,
+                    )
+                    if (filterCount > 0) {
+                        Text(
+                            filterCount.toString(), color = Space.Bg, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(x = 6.dp, y = (-6).dp)
+                                .clip(CircleShape)
+                                .background(Space.Magenta)
+                                .padding(horizontal = 4.dp),
+                        )
+                    }
+                }
+            }
+        }
+        IconButton(onClick = onSettings) {
+            Icon(Icons.Rounded.SettingsIcon, contentDescription = "Settings", tint = Space.Cyan)
         }
     }
 }

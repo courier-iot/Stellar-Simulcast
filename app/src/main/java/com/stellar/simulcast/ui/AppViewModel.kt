@@ -5,7 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.stellar.simulcast.data.AiringEp
 import com.stellar.simulcast.data.AniList
 import com.stellar.simulcast.data.Anime
+import com.stellar.simulcast.data.Filters
 import com.stellar.simulcast.data.Load
+import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.Paged
 import com.stellar.simulcast.data.SeasonKey
 import com.stellar.simulcast.data.attempt
@@ -81,6 +83,9 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    private var seasonFilters = Settings.filters.value
+    private var searchFilters = Settings.filters.value
+
     fun setSeason(key: SeasonKey) {
         if (key == seasonKey.value && (season.value.items.isNotEmpty() || season.value.loading)) return
         seasonJob?.cancel()
@@ -89,13 +94,28 @@ class AppViewModel : ViewModel() {
         loadMoreSeason()
     }
 
+    /** Called when filters change; restarts the season list and the current search. */
+    fun applyFilters(f: Filters) {
+        if (f != seasonFilters) {
+            seasonFilters = f
+            seasonJob?.cancel()
+            season.value = PagedList()
+            loadMoreSeason()
+        }
+        if (f != searchFilters) {
+            searchFilters = f
+            setQuery(query.value)
+        }
+    }
+
     fun loadMoreSeason() {
         val cur = season.value
         if (cur.loading || !cur.hasMore) return
         season.value = cur.copy(loading = true, error = null)
         val key = seasonKey.value
+        val f = seasonFilters
         seasonJob = viewModelScope.launch {
-            season.value = merge(cur, attempt { AniList.season(key, cur.page + 1) })
+            season.value = merge(cur, attempt { AniList.season(key, cur.page + 1, f) })
         }
     }
 
@@ -109,7 +129,7 @@ class AppViewModel : ViewModel() {
         search.value = PagedList(loading = true)
         searchJob = viewModelScope.launch {
             delay(450) // wait for typing to pause
-            search.value = merge(PagedList(), attempt { AniList.search(q.trim(), 1) })
+            search.value = merge(PagedList(), attempt { AniList.search(q.trim(), 1, searchFilters) })
         }
     }
 
@@ -119,7 +139,7 @@ class AppViewModel : ViewModel() {
         if (cur.loading || !cur.hasMore || q.isEmpty()) return
         search.value = cur.copy(loading = true, error = null)
         searchJob = viewModelScope.launch {
-            search.value = merge(cur, attempt { AniList.search(q, cur.page + 1) })
+            search.value = merge(cur, attempt { AniList.search(q, cur.page + 1, searchFilters) })
         }
     }
 

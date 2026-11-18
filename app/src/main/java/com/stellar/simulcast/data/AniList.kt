@@ -31,6 +31,7 @@ object AniList {
         title { romaji english }
         coverImage { large }
         nextAiringEpisode { episode airingAt }
+        externalLinks { site url type }
     """
 
     private val AIRING = gql(
@@ -63,10 +64,11 @@ object AniList {
 
     private val SEASON = gql(
         """
-        query (%season: MediaSeason, %year: Int, %page: Int) {
+        query (%season: MediaSeason, %year: Int, %page: Int, %genres: [String], %formats: [MediaFormat]) {
           Page(page: %page, perPage: 30) {
             pageInfo { hasNextPage }
-            media(season: %season, seasonYear: %year, type: ANIME, isAdult: false, sort: POPULARITY_DESC) { $MEDIA }
+            media(season: %season, seasonYear: %year, type: ANIME, isAdult: false, sort: POPULARITY_DESC,
+                  genre_in: %genres, format_in: %formats) { $MEDIA }
           }
         }
         """
@@ -74,10 +76,11 @@ object AniList {
 
     private val SEARCH = gql(
         """
-        query (%q: String, %page: Int) {
+        query (%q: String, %page: Int, %genres: [String], %formats: [MediaFormat]) {
           Page(page: %page, perPage: 30) {
             pageInfo { hasNextPage }
-            media(search: %q, type: ANIME, isAdult: false, sort: SEARCH_MATCH) { $MEDIA }
+            media(search: %q, type: ANIME, isAdult: false, sort: SEARCH_MATCH,
+                  genre_in: %genres, format_in: %formats) { $MEDIA }
           }
         }
         """
@@ -102,7 +105,6 @@ object AniList {
             description(asHtml: false)
             bannerImage season seasonYear duration source
             studios(isMain: true) { nodes { name } }
-            externalLinks { site url type }
             airingSchedule(notYetAired: true, perPage: 4) { nodes { episode airingAt } }
           }
         }
@@ -148,11 +150,19 @@ object AniList {
     suspend fun airedFor(ids: List<Int>, from: Long, to: Long): List<AiringEp> =
         if (ids.isEmpty()) emptyList() else airing(from, to, "TIME", ids, 4)
 
-    suspend fun season(key: SeasonKey, page: Int): Paged<Anime> =
-        mediaPage(SEASON, JSONObject().put("season", key.season.name).put("year", key.year).put("page", page))
+    suspend fun season(key: SeasonKey, page: Int, f: Filters): Paged<Anime> =
+        mediaPage(
+            SEASON,
+            JSONObject().put("season", key.season.name).put("year", key.year).put("page", page).withFilters(f),
+        )
 
-    suspend fun search(q: String, page: Int): Paged<Anime> =
-        mediaPage(SEARCH, JSONObject().put("q", q).put("page", page))
+    suspend fun search(q: String, page: Int, f: Filters): Paged<Anime> =
+        mediaPage(SEARCH, JSONObject().put("q", q).put("page", page).withFilters(f))
+
+    /** Genre and format filters run on AniList's side; null means "any". */
+    private fun JSONObject.withFilters(f: Filters): JSONObject = this
+        .put("genres", if (f.genres.isEmpty()) JSONObject.NULL else JSONArray(f.genres.toList()))
+        .put("formats", if (f.formats.isEmpty()) JSONObject.NULL else JSONArray(f.formats.toList()))
 
     suspend fun byIds(ids: List<Int>): List<Anime> {
         val out = mutableListOf<Anime>()
@@ -224,10 +234,15 @@ object AniList {
         val romaji = t?.str("romaji")
         val next = o.optJSONObject("nextAiringEpisode")
         val genres = o.optJSONArray("genres")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
+        val services = o.optJSONArray("externalLinks").objects()
+            .filter { it.optString("type") == "STREAMING" }
+            .mapNotNull { it.str("site") }
+            .distinct()
         return Anime(
             id = o.getInt("id"),
-            title = english ?: romaji ?: "Untitled",
-            romaji = romaji?.takeIf { it != english },
+            english = english,
+            romaji = romaji,
+            services = services,
             cover = o.optJSONObject("coverImage")?.str("large"),
             format = o.str("format"),
             episodes = o.int("episodes"),
