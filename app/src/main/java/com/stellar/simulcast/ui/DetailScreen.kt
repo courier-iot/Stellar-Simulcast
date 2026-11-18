@@ -76,6 +76,11 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.stellar.simulcast.data.AniList
 import com.stellar.simulcast.data.AnimeDetail
+import com.stellar.simulcast.data.Anime
+import com.stellar.simulcast.data.ListStatus
+import com.stellar.simulcast.data.Lists
+import androidx.compose.foundation.layout.widthIn
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stellar.simulcast.data.EpisodeInfo
 import com.stellar.simulcast.data.Load
 import com.stellar.simulcast.data.MangaDex
@@ -86,7 +91,7 @@ import com.stellar.simulcast.data.Watchlist
 import com.stellar.simulcast.data.attempt
 
 @Composable
-fun DetailScreen(id: Int, onBack: () -> Unit, open: (Int) -> Unit, openManga: (String) -> Unit) {
+fun DetailScreen(id: Int, onBack: () -> Unit, open: (Int) -> Unit, openManga: (String) -> Unit, openStudio: (Int) -> Unit) {
     var reload by remember { mutableIntStateOf(0) }
     val state by produceState<Load<AnimeDetail>>(Load.Loading, id, reload) {
         value = Load.Loading
@@ -106,7 +111,9 @@ fun DetailScreen(id: Int, onBack: () -> Unit, open: (Int) -> Unit, openManga: (S
         when (val s = state) {
             Load.Loading -> LoadingView()
             is Load.Error -> ErrorView(s.message) { reload++ }
-            is Load.Ready -> DetailBody(s.data, now, open, openManga) { url -> runCatching { uri.openUri(url) } }
+            is Load.Ready -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                DetailBody(s.data, now, open, openManga, openStudio) { url -> runCatching { uri.openUri(url) } }
+            }
         }
         IconButton(
             onClick = onBack,
@@ -122,7 +129,7 @@ fun DetailScreen(id: Int, onBack: () -> Unit, open: (Int) -> Unit, openManga: (S
 }
 
 @Composable
-private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga: (String) -> Unit, openUrl: (String) -> Unit) {
+private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga: (String) -> Unit, openStudio: (Int) -> Unit, openUrl: (String) -> Unit) {
     val a = d.anime
     val ctx = LocalContext.current
     val watch = LocalWatch.current
@@ -157,7 +164,8 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga
         }
     }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
+    val novel = a.isNovel || a.type == "MANGA"
+    LazyColumn(Modifier.widthIn(max = 760.dp).fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
         // Banner + poster
         item {
             Box(Modifier.fillMaxWidth().height(270.dp)) {
@@ -196,11 +204,19 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga
                     d.duration?.let { "$it min" },
                     a.score?.let { "★ $it%$trend" },
                     if (d.season != null && d.seasonYear != null) "${pretty(d.season)} ${d.seasonYear}" else null,
-                    d.studios.firstOrNull(),
                     d.source?.let { "Based on: ${pretty(it)}" },
                 )
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     chips.forEach { InfoChip(it) }
+                    val studio = d.studios.firstOrNull()
+                    if (studio != null && d.studioId != null) {
+                        Box(
+                            Modifier.clip(RoundedCornerShape(50)).background(Space.Cyan.copy(alpha = 0.15f))
+                                .border(1.dp, Space.Cyan.copy(alpha = 0.6f), RoundedCornerShape(50))
+                                .clickable { openStudio(d.studioId) }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) { Text("$studio ›", color = Space.Cyan, fontSize = 12.sp, maxLines = 1) }
+                    }
                 }
                 if (trend.isNotEmpty()) {
                     Text(
@@ -221,7 +237,7 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga
                     if (starred) Icons.Rounded.Star else Icons.Rounded.StarBorder,
                     if (starred) "Starred" else "Star", if (starred) Space.Magenta else Space.Cyan, Modifier.weight(1f),
                 ) { watch.toggle(a.id) }
-                ActionTile(Icons.Rounded.SmartDisplay, "Trailer", Space.Cyan, Modifier.weight(1f), enabled = d.trailerUrl != null) {
+                ActionTile(Icons.Rounded.SmartDisplay, "Trailer", Space.Cyan, Modifier.weight(1f), enabled = d.trailerUrl != null && !novel) {
                     d.trailerUrl?.let(openUrl)
                 }
                 ActionTile(Icons.Rounded.Share, "Share", Space.Cyan, Modifier.weight(1f)) { shareShow(ctx, a) }
@@ -256,10 +272,15 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga
         }
 
         // Next episode, breaks, finish estimate, calendar
-        item { NextEpisodePanel(d, now) }
+        item {
+            if (novel) NovelPanel(d) else NextEpisodePanel(d, now)
+        }
+
+        // Your list + score
+        item { ListPanel(a) }
 
         // Progress
-        item { ProgressPanel(d, watched) }
+        item { ProgressPanel(d, watched, unit = if (novel) "volumes" else "episodes") }
 
         // Where to watch
         item {
@@ -319,8 +340,25 @@ private fun DetailBody(d: AnimeDetail, now: Long, open: (Int) -> Unit, openManga
             }
             val shown = if (allEpisodes) d.episodeList else episodeWindow(d.episodeList, watched)
             items(shown, key = { "ep${it.number}" }) { ep ->
-                EpisodeRow(ep, watched, now) { n ->
+                EpisodeRow(ep, a, watched, now) { n ->
                     Watchlist.setProgress(a.id, if (n == watched) n - 1 else n)
+                }
+            }
+        }
+
+        // Recommendations
+        if (d.recommendations.isNotEmpty()) {
+            item {
+                Column(Modifier.padding(top = 14.dp)) {
+                    Box(Modifier.padding(horizontal = 16.dp)) { SectionLabel("If you liked this") }
+                    LazyRow(contentPadding = PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(d.recommendations, key = { "rec" + it.id }) { r ->
+                            Column(Modifier.width(104.dp).clickable { open(r.id) }) {
+                                Poster(r.cover, Modifier.fillMaxWidth().aspectRatio(0.7f))
+                                Text(r.name(lang), color = Space.Text, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -414,7 +452,7 @@ private fun NextEpisodePanel(d: AnimeDetail, now: Long) {
     val ep = a.nextEpisode
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).neonPanel().padding(14.dp)) {
         if (at != null && ep != null) {
-            val streamAt = TimeText.streamAt(at)
+            val streamAt = TimeText.streamAt(at, a)
             Text(
                 if (Settings.display.streamDelayMin > 0) "NEXT EPISODE · STREAMING" else "NEXT EPISODE",
                 color = Space.Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, letterSpacing = 2.sp,
@@ -436,7 +474,7 @@ private fun NextEpisodePanel(d: AnimeDetail, now: Long) {
             finishEstimate(d)?.let { end ->
                 val left = (a.episodes ?: 0) - (a.airedCount ?: 0)
                 Text(
-                    "$left episodes left · ends around ${TimeText.date(TimeText.streamAt(end))}",
+                    "$left episodes left · ends around ${TimeText.date(TimeText.streamAt(end, a))}",
                     color = Space.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp),
                 )
             }
@@ -444,7 +482,7 @@ private fun NextEpisodePanel(d: AnimeDetail, now: Long) {
             if (later.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))
                 later.forEach { e ->
-                    Text("EP ${e.number} · ${TimeText.dateTime(TimeText.streamAt(e.airingAt ?: 0))}", color = Space.Muted, fontSize = 13.sp)
+                    Text("EP ${e.number} · ${TimeText.dateTime(TimeText.streamAt(e.airingAt ?: 0, a))}", color = Space.Muted, fontSize = 13.sp)
                 }
             }
             OutlinedButton(
@@ -471,6 +509,50 @@ private fun NextEpisodePanel(d: AnimeDetail, now: Long) {
                 },
                 color = Space.Text,
             )
+        }
+    }
+}
+
+@Composable
+private fun NovelPanel(d: AnimeDetail) {
+    val a = d.anime
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).neonPanel().padding(14.dp)) {
+        Text(if (a.isNovel) "LIGHT NOVEL" else "MANGA", color = Space.Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, letterSpacing = 2.sp)
+        Text(
+            listOfNotNull(statusLabel(a.status), a.volumes?.let { "$it volumes" }, a.chapters?.let { "$it chapters" }).joinToString(" · "),
+            color = Space.Text,
+        )
+        Text("Tracking only: log the volumes you've read below. Buy or read it from the official links on AniList.",
+            color = Space.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+/** Plan to watch / Watching / … and your own 1–10 score. Saved on this phone only. */
+@Composable
+private fun ListPanel(a: Anime) {
+    val statuses by Lists.animeStatus.collectAsStateWithLifecycle()
+    val scores by Lists.animeScore.collectAsStateWithLifecycle()
+    val status = statuses[a.id]
+    val score = scores[a.id]
+    val novel = a.isNovel || a.type == "MANGA"
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).neonPanel().padding(14.dp)) {
+        Text("YOUR LIST", color = Space.Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, letterSpacing = 2.sp)
+        Spacer(Modifier.height(6.dp))
+        ChipGrid(
+            ListStatus.entries.map { it.name },
+            setOfNotNull(status?.name),
+            label = { n -> ListStatus.valueOf(n).let { if (novel) it.manga else it.anime } },
+            perRow = 3,
+        ) { n ->
+            val picked = ListStatus.valueOf(n)
+            Lists.setAnimeStatus(a.id, if (picked == status) null else picked)
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(if (score != null) "Your score: $score / 10" else "Your score", color = Space.Text)
+        Spacer(Modifier.height(6.dp))
+        ChipGrid((1..10).map { it.toString() }, setOfNotNull(score?.toString()), perRow = 5) { n ->
+            val v = n.toInt()
+            Lists.setAnimeScore(a.id, if (v == score) null else v)
         }
     }
 }
@@ -510,7 +592,7 @@ private fun finishEstimate(d: AnimeDetail): Long? {
 }
 
 @Composable
-private fun ProgressPanel(d: AnimeDetail, watched: Int) {
+private fun ProgressPanel(d: AnimeDetail, watched: Int, unit: String) {
     val a = d.anime
     val aired = a.airedCount
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).neonPanel(Space.Magenta).padding(14.dp)) {
@@ -521,7 +603,7 @@ private fun ProgressPanel(d: AnimeDetail, watched: Int) {
             }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    "$watched" + (a.episodes?.let { " / $it" } ?: ""),
+                    "$watched" + ((if (unit == "volumes") a.volumes else a.episodes)?.let { " / $it" } ?: "") + " $unit",
                     color = Space.Text, fontFamily = FontFamily.Monospace, fontSize = 22.sp, fontWeight = FontWeight.Bold,
                 )
                 val badge = progressBadge(a, if (watched > 0) watched else null)
@@ -532,7 +614,7 @@ private fun ProgressPanel(d: AnimeDetail, watched: Int) {
             }
             IconButton(
                 onClick = { Watchlist.setProgress(a.id, watched + 1) },
-                enabled = a.episodes == null || watched < (a.episodes ?: 0),
+                enabled = (if (unit == "volumes") a.volumes else a.episodes)?.let { watched < it } ?: true,
             ) {
                 Icon(Icons.Rounded.Add, contentDescription = "One more", tint = Space.Cyan)
             }
@@ -552,9 +634,9 @@ private fun ProgressPanel(d: AnimeDetail, watched: Int) {
 }
 
 @Composable
-private fun EpisodeRow(ep: EpisodeInfo, watched: Int, now: Long, onToggle: (Int) -> Unit) {
+private fun EpisodeRow(ep: EpisodeInfo, anime: Anime, watched: Int, now: Long, onToggle: (Int) -> Unit) {
     val isWatched = ep.number <= watched
-    val at = ep.airingAt?.let { TimeText.streamAt(it) }
+    val at = ep.airingAt?.let { TimeText.streamAt(it, anime) }
     val upcoming = at != null && at > now
     Row(
         Modifier

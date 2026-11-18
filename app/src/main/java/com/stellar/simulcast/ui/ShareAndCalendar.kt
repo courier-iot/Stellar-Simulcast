@@ -39,7 +39,7 @@ fun shareShow(ctx: Context, a: Anime) {
     val name = a.name(Settings.titleLang)
     val at = a.nextAiringAt
     val next = if (at != null && a.nextEpisode != null) {
-        "\nNext: EP ${a.nextEpisode}, ${TimeText.dateTime(TimeText.streamAt(at))}"
+        "\nNext: EP ${a.nextEpisode}, ${TimeText.dateTime(TimeText.streamAt(at, a))}"
     } else ""
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
@@ -57,7 +57,7 @@ fun addToCalendar(ctx: Context, a: Anime, durationMin: Int?): Boolean {
     val at = a.nextAiringAt ?: return false
     val ep = a.nextEpisode ?: return false
     val name = a.name(Settings.titleLang)
-    val start = TimeText.streamAt(at) * 1000
+    val start = TimeText.streamAt(at, a) * 1000
     val remaining = a.episodes?.let { it - ep + 1 }?.takeIf { it > 1 }
     val intent = Intent(Intent.ACTION_INSERT)
         .setData(CalendarContract.Events.CONTENT_URI)

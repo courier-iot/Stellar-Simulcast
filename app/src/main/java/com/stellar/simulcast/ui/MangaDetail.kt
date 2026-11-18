@@ -72,6 +72,14 @@ import com.stellar.simulcast.data.MangaDex
 import com.stellar.simulcast.data.MangaLibrary
 import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.attempt
+import com.stellar.simulcast.data.Downloads
+import com.stellar.simulcast.data.ListStatus
+import com.stellar.simulcast.data.Lists
+import com.stellar.simulcast.work.DownloadWorker
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material3.CircularProgressIndicator
 
 private data class MangaPage(val manga: Manga, val chapters: List<Chapter>)
 
@@ -94,7 +102,9 @@ fun MangaDetailScreen(id: String, onBack: () -> Unit, read: ReadAction, openAnim
         when (val s = state) {
             Load.Loading -> LoadingView()
             is Load.Error -> ErrorView(s.message) { reload++ }
-            is Load.Ready -> MangaBody(s.data, read, openAnime) { url -> runCatching { uri.openUri(url) } }
+            is Load.Ready -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                MangaBody(s.data, read, openAnime) { url -> runCatching { uri.openUri(url) } }
+            }
         }
         IconButton(
             onClick = onBack,
@@ -114,6 +124,10 @@ private fun MangaBody(page: MangaPage, read: ReadAction, openAnime: (Int) -> Uni
     val mark = if (Settings.manga.trackReading) marks[m.id] else null
     var newestFirst by remember { mutableStateOf(true) }
     val readable = page.chapters.filter { it.externalUrl == null && it.pages > 0 }
+    val ask = LocalAskNotify.current
+    val downloadsOn = Settings.manga.downloads
+    val downloaded by Downloads.ready.collectAsStateWithLifecycle()
+    val downloading by Downloads.active.collectAsStateWithLifecycle()
 
     // Anime adaptations, via the AniList ID MangaDex has on file.
     val anime by produceState<List<Anime>>(emptyList(), m.aniListId) {
@@ -121,7 +135,7 @@ private fun MangaBody(page: MangaPage, read: ReadAction, openAnime: (Int) -> Uni
         value = runCatching { AniList.animeForManga(al) }.getOrDefault(emptyList())
     }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
+    LazyColumn(Modifier.widthIn(max = 760.dp).fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
         item {
             Box(Modifier.fillMaxWidth().height(250.dp)) {
                 AsyncImage(
@@ -161,7 +175,7 @@ private fun MangaBody(page: MangaPage, read: ReadAction, openAnime: (Int) -> Uni
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 val following = m.id in follows
                 MangaAction(if (following) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, if (following) "Following" else "Follow",
-                    if (following) Space.Magenta else Space.Cyan, Modifier.weight(1f)) { MangaLibrary.toggleFollow(m.id) }
+                    if (following) Space.Magenta else Space.Cyan, Modifier.weight(1f)) { if (MangaLibrary.toggleFollow(m.id)) ask() }
                 val resume = mark?.let { mk -> readable.firstOrNull { it.id == mk.chapterId } }
                 val start = resume ?: readable.firstOrNull()
                 MangaAction(Icons.AutoMirrored.Rounded.MenuBook, if (resume != null) "Continue" else "Start", Space.Cyan, Modifier.weight(1f),
@@ -183,6 +197,9 @@ private fun MangaBody(page: MangaPage, read: ReadAction, openAnime: (Int) -> Uni
                 )
             }
         }
+
+        // Your list + score
+        item { MangaListPanel(m.id) }
 
         // Watch the anime
         if (anime.isNotEmpty()) {
@@ -264,9 +281,18 @@ private fun MangaBody(page: MangaPage, read: ReadAction, openAnime: (Int) -> Uni
                     )
                 }
                 when {
-                    c.externalUrl != null -> Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = Space.Muted, modifier = Modifier.size(18.dp))
+                    c.externalUrl != null -> Icon(Icons.AutoMirrored.Rounded.OpenInNew, "Opens on the publisher's site", tint = Space.Muted, modifier = Modifier.size(18.dp))
                     current -> Text("p.${(mark?.page ?: 0) + 1}", color = Space.Cyan, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                    done -> Icon(Icons.Rounded.CheckCircle, null, tint = Space.Cyan.copy(alpha = 0.6f), modifier = Modifier.size(18.dp))
+                    done -> Icon(Icons.Rounded.CheckCircle, "Read", tint = Space.Cyan.copy(alpha = 0.6f), modifier = Modifier.size(18.dp))
+                }
+                if (downloadsOn && c.externalUrl == null && c.pages > 0) {
+                    when (c.id) {
+                        in downloaded -> Icon(Icons.Rounded.DownloadDone, "Downloaded", tint = Space.Magenta, modifier = Modifier.padding(start = 10.dp).size(20.dp))
+                        in downloading -> CircularProgressIndicator(color = Space.Magenta, strokeWidth = 2.dp, modifier = Modifier.padding(start = 10.dp).size(18.dp))
+                        else -> IconButton(onClick = { DownloadWorker.enqueue(ctx, m.id, m.title, c.id) }) {
+                            Icon(Icons.Rounded.Download, "Download for offline", tint = Space.Muted, modifier = Modifier.size(20.dp))
+                        }
+                    }
                 }
             }
         }
@@ -275,6 +301,28 @@ private fun MangaBody(page: MangaPage, read: ReadAction, openAnime: (Int) -> Uni
                 "Chapters stream from MangaDex. Translations are by the scanlation groups credited on each chapter.",
                 color = Space.Muted, fontSize = 11.sp, modifier = Modifier.padding(16.dp).navigationBarsPadding(),
             )
+        }
+    }
+}
+
+@Composable
+private fun MangaListPanel(id: String) {
+    val statuses by Lists.mangaStatus.collectAsStateWithLifecycle()
+    val scores by Lists.mangaScore.collectAsStateWithLifecycle()
+    val status = statuses[id]
+    val score = scores[id]
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).neonPanel().padding(14.dp)) {
+        MangaLabel("Your list")
+        ChipGrid(ListStatus.entries.map { it.name }, setOfNotNull(status?.name), label = { ListStatus.valueOf(it).manga }, perRow = 3) { n ->
+            val picked = ListStatus.valueOf(n)
+            Lists.setMangaStatus(id, if (picked == status) null else picked)
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(if (score != null) "Your score: $score / 10" else "Your score", color = Space.Text)
+        Spacer(Modifier.height(6.dp))
+        ChipGrid((1..10).map { it.toString() }, setOfNotNull(score?.toString()), perRow = 5) { n ->
+            val v = n.toInt()
+            Lists.setMangaScore(id, if (v == score) null else v)
         }
     }
 }

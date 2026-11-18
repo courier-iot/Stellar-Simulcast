@@ -43,7 +43,10 @@ import com.stellar.simulcast.work.EpisodeCheckWorker
 @Composable
 fun TransferSection() {
     val ctx = LocalContext.current
-    var showQr by remember { mutableStateOf<String?>(null) }
+    var qrParts by remember { mutableStateOf<List<String>?>(null) }
+    var qrIndex by remember { mutableStateOf(0) }
+    // Parts collected so far while scanning a multi-code transfer.
+    var received by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
     var showPaste by remember { mutableStateOf(false) }
     var confirmCode by remember { mutableStateOf<String?>(null) }
 
@@ -59,8 +62,28 @@ fun TransferSection() {
             if (text != null) confirmCode = text else Toast.makeText(ctx, "Couldn't read that file", Toast.LENGTH_SHORT).show()
         }
     }
-    val scan = rememberLauncherForActivityResult(ScanContract()) { result ->
-        result.contents?.let { confirmCode = it }
+    fun scanOptions(prompt: String) = ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+        .setPrompt(prompt).setBeepEnabled(false).setOrientationLocked(false)
+
+    lateinit var scanLauncher: androidx.activity.result.ActivityResultLauncher<ScanOptions>
+    scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val text = result.contents ?: return@rememberLauncherForActivityResult
+        val part = Transfer.parsePart(text)
+        if (part == null) {
+            confirmCode = text
+            return@rememberLauncherForActivityResult
+        }
+        val (i, n, data) = part
+        val got = received + (i to data)
+        if (got.size >= n && (1..n).all { it in got }) {
+            received = emptyMap()
+            confirmCode = (1..n).joinToString("") { got.getValue(it) }
+        } else {
+            received = got
+            val missing = (1..n).first { it !in got }
+            Toast.makeText(ctx, "Got ${got.size} of $n. Scan code $missing next.", Toast.LENGTH_SHORT).show()
+            scanLauncher.launch(scanOptions("Scan code $missing of $n"))
+        }
     }
 
     Text(
@@ -69,10 +92,8 @@ fun TransferSection() {
     )
     Text("Send from this phone", color = Space.Text)
     OutlinedButton(onClick = {
-        val code = Transfer.export(ctx)
-        if (code.length > Transfer.QR_LIMIT) {
-            Toast.makeText(ctx, "Too much to fit in a QR code. Use Share or Save file instead.", Toast.LENGTH_LONG).show()
-        } else showQr = code
+        qrIndex = 0
+        qrParts = Transfer.parts(Transfer.export(ctx))
     }, modifier = Modifier.fillMaxWidth()) { Text("Show QR code", color = Space.Cyan) }
     OutlinedButton(onClick = {
         val send = Intent(Intent.ACTION_SEND).apply {
@@ -87,27 +108,37 @@ fun TransferSection() {
 
     Text("Receive on this phone", color = Space.Text, modifier = Modifier.padding(top = 10.dp))
     OutlinedButton(onClick = {
-        scan.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt("Scan the code on your other phone").setBeepEnabled(false).setOrientationLocked(false))
+        received = emptyMap()
+        scanLauncher.launch(scanOptions("Scan the code on your other phone"))
     }, modifier = Modifier.fillMaxWidth()) { Text("Scan QR code", color = Space.Magenta) }
     OutlinedButton(onClick = { showPaste = true }, modifier = Modifier.fillMaxWidth()) { Text("Paste code", color = Space.Magenta) }
     OutlinedButton(onClick = { openFile.launch(arrayOf("text/plain")) }, modifier = Modifier.fillMaxWidth()) {
         Text("Open a file", color = Space.Magenta)
     }
 
-    showQr?.let { code ->
+    qrParts?.let { parts ->
+        val code = parts[qrIndex.coerceIn(0, parts.lastIndex)]
         val bitmap = remember(code) { qr(code) }
         AlertDialog(
-            onDismissRequest = { showQr = null },
+            onDismissRequest = { qrParts = null },
             containerColor = Space.Surface,
-            title = { Text("Scan on your other phone", color = Space.Cyan) },
+            title = {
+                Text(if (parts.size > 1) "Code ${qrIndex + 1} of ${parts.size}" else "Scan on your other phone", color = Space.Cyan)
+            },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Image(bitmap, "Transfer QR code", Modifier.size(260.dp).clip(RoundedCornerShape(12.dp)).background(Color.White).padding(8.dp))
-                    Text("In Stellar Simulcast on the new phone: Settings → Move to another phone → Scan QR code.",
+                    Text(if (parts.size > 1) "Big library, so it's split into ${parts.size} codes. Scan them in order; the other phone keeps the scanner open until it has them all." else "In Stellar Simulcast on the new phone: Settings → Move to another phone → Scan QR code.",
                         color = Space.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
                 }
             },
-            confirmButton = { TextButton(onClick = { showQr = null }) { Text("Done", color = Space.Cyan) } },
+            confirmButton = {
+                if (qrIndex < parts.lastIndex) TextButton(onClick = { qrIndex++ }) { Text("Next code", color = Space.Cyan) }
+                else TextButton(onClick = { qrParts = null }) { Text("Done", color = Space.Cyan) }
+            },
+            dismissButton = {
+                if (qrIndex > 0) TextButton(onClick = { qrIndex-- }) { Text("Back", color = Space.Muted) }
+            },
         )
     }
 

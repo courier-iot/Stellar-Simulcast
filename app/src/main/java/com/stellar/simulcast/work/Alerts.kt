@@ -33,6 +33,7 @@ import com.stellar.simulcast.data.SequelNews
 import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.TimeText
 import com.stellar.simulcast.data.Watchlist
+import com.stellar.simulcast.widget.MangaWidget
 import com.stellar.simulcast.widget.NextUpWidget
 import kotlinx.coroutines.CancellationException
 import java.time.Duration
@@ -46,6 +47,7 @@ private fun initAll(ctx: Context) {
     Watchlist.init(ctx)
     Settings.init(ctx)
     MangaLibrary.init(ctx)
+    com.stellar.simulcast.data.Lists.init(ctx)
 }
 
 /** Runs on the chosen interval: new-episode alerts, sequel alerts (twice a day), and a widget refresh. */
@@ -66,10 +68,11 @@ class EpisodeCheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         if (prefs.isQuiet(LocalTime.now().hour)) return Result.success()
 
         return try {
-            // Episodes count as "out" once Japan air time + your stream delay has passed.
-            val delay = Settings.delaySec
+            // Episodes count as "out" once Japan air time + that show's stream delay has passed.
+            val maxDelay = TimeText.maxDelaySec()
             val from = maxOf(Watchlist.lastCheck.takeIf { it > 0 } ?: (now - 3600), now - 86400)
-            val eps = AniList.airedFor(ids.toList(), from - delay, now - delay + 1)
+            val eps = AniList.airedFor(ids.toList(), from - maxDelay, now + 1)
+                .filter { TimeText.streamAt(it.airingAt, it.anime).let { at -> at > from && at <= now } }
             if (prefs.grouped && eps.size > 1) Notifier.grouped(applicationContext, eps)
             else eps.forEach { Notifier.episode(applicationContext, it) }
             Watchlist.lastCheck = now
@@ -149,6 +152,9 @@ class ChapterCheckWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
                 kotlinx.coroutines.delay(250) // stay well under MangaDex's rate limit
             }
             if (fresh.isNotEmpty()) {
+                MangaLibrary.recentNew = fresh.sortedByDescending { it.second.publishAt }
+                    .map { (mid, c) -> "$mid|${c.id}|${c.label}|${c.publishAt}" } + MangaLibrary.recentNew
+                runCatching { MangaWidget.refresh(applicationContext) }
                 val titles = MangaDex.byIds(fresh.map { it.first }.toSet()).associateBy { it.id }
                 val grouped = fresh.groupBy { it.first }
                 for ((mangaId, list) in grouped) {
@@ -188,7 +194,7 @@ class DigestWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
         return try {
             val now = System.currentTimeMillis() / 1000
             val today = AniList.byIds(ids.toList())
-                .filter { a -> a.nextAiringAt?.let { TimeText.streamAt(it) in now..(now + 86400) } == true }
+                .filter { a -> a.nextAiringAt?.let { TimeText.streamAt(it, a) in now..(now + 86400) } == true }
                 .sortedBy { it.nextAiringAt }
             if (today.isNotEmpty()) Notifier.digest(applicationContext, today)
             Result.success()
@@ -270,6 +276,7 @@ object Notifier {
             .setContentTitle(title(ep.anime))
             .setContentText("Episode ${ep.episode} is out now")
             .setContentIntent(openIntent(ctx, ep.id, ep.anime.id))
+            .addAction(0, "Mark watched", NotifyActionReceiver.markWatched(ctx, ep.id, ep.anime.id, ep.episode))
             .build()
         post(ctx, ep.id, n)
     }
@@ -303,7 +310,7 @@ object Notifier {
         val style = NotificationCompat.InboxStyle()
         shows.take(7).forEach { a ->
             val at = a.nextAiringAt ?: return@forEach
-            style.addLine("${TimeText.clock(TimeText.streamAt(at))} · ${title(a)} EP ${a.nextEpisode ?: "?"}")
+            style.addLine("${TimeText.clock(TimeText.streamAt(at, a))} · ${title(a)} EP ${a.nextEpisode ?: "?"}")
         }
         if (shows.size > 7) style.setSummaryText("+${shows.size - 7} more")
         val n = base(ctx, CHANNEL_NEWS)
@@ -327,12 +334,20 @@ object Notifier {
             putExtra(MainActivity.EXTRA_MANGA, manga.id)
         }
         val pending = PendingIntent.getActivity(ctx, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val n = base(ctx, CHANNEL_NEWS)
+        val builder = base(ctx, CHANNEL_NEWS)
             .setContentTitle("New chapter: ${manga.title}")
             .setContentText(text)
             .setContentIntent(pending)
-            .build()
-        post(ctx, id, n)
+        // "Read now" jumps straight into the reader at the first new chapter.
+        sorted.firstOrNull { it.externalUrl == null }?.let { first ->
+            val readIntent = Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(MainActivity.EXTRA_READ, "${manga.id}|${first.id}|0")
+            }
+            val readPending = PendingIntent.getActivity(ctx, id + 1, readIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            builder.addAction(0, "Read now", readPending)
+        }
+        post(ctx, id, builder.build())
     }
 
     private fun post(ctx: Context, id: Int, n: Notification) {
@@ -340,6 +355,68 @@ object Notifier {
         try {
             NotificationManagerCompat.from(ctx).notify(id, n)
         } catch (_: SecurityException) {
+        }
+    }
+}
+
+/** Handles buttons on notifications (e.g. "Mark watched"). */
+class NotifyActionReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        if (intent.action != ACTION_WATCHED) return
+        initAll(ctx)
+        val animeId = intent.getIntExtra(EXTRA_ANIME, -1)
+        val episode = intent.getIntExtra(EXTRA_EP, -1)
+        if (animeId > 0 && episode > 0) {
+            val current = Watchlist.progress.value[animeId] ?: 0
+            if (episode > current) Watchlist.setProgress(animeId, episode)
+        }
+        NotificationManagerCompat.from(ctx).cancel(intent.getIntExtra(EXTRA_NOTIFICATION, 0))
+    }
+
+    companion object {
+        private const val ACTION_WATCHED = "com.stellar.simulcast.MARK_WATCHED"
+        private const val EXTRA_ANIME = "anime"
+        private const val EXTRA_EP = "episode"
+        private const val EXTRA_NOTIFICATION = "notification"
+
+        fun markWatched(ctx: Context, notificationId: Int, animeId: Int, episode: Int): PendingIntent {
+            val i = Intent(ctx, NotifyActionReceiver::class.java).apply {
+                action = ACTION_WATCHED
+                putExtra(EXTRA_ANIME, animeId)
+                putExtra(EXTRA_EP, episode)
+                putExtra(EXTRA_NOTIFICATION, notificationId)
+            }
+            return PendingIntent.getBroadcast(ctx, 300_000 + (notificationId and 0xFFFFF), i,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        }
+    }
+}
+
+/** Downloads one chapter for offline reading. */
+class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+    override suspend fun doWork(): Result {
+        initAll(applicationContext)
+        val mangaId = inputData.getString("manga") ?: return Result.failure()
+        val chapterId = inputData.getString("chapter") ?: return Result.failure()
+        val title = inputData.getString("title") ?: "Manga"
+        return try {
+            val chapter = MangaDex.chapters(mangaId).firstOrNull { it.id == chapterId } ?: return Result.failure()
+            com.stellar.simulcast.data.Downloads.download(applicationContext, mangaId, title, chapter)
+            Result.success()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (runAttemptCount < 2) Result.retry() else Result.failure()
+        }
+    }
+
+    companion object {
+        fun enqueue(ctx: Context, mangaId: String, mangaTitle: String, chapterId: String) {
+            val request = androidx.work.OneTimeWorkRequestBuilder<DownloadWorker>()
+                .setInputData(androidx.work.workDataOf("manga" to mangaId, "chapter" to chapterId, "title" to mangaTitle))
+                .setConstraints(networkConstraint)
+                .build()
+            WorkManager.getInstance(ctx).enqueueUniqueWork("dl-$chapterId", androidx.work.ExistingWorkPolicy.KEEP, request)
         }
     }
 }

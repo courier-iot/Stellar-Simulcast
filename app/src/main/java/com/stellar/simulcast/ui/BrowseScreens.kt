@@ -86,7 +86,7 @@ fun BrowseScreen(vm: AppViewModel, open: (Int) -> Unit) {
             visible.isEmpty() && !state.hasMore && !state.loading ->
                 EmptyView("No matches", "Nothing here fits your filters or everything is hidden.")
             else -> LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
+                columns = GridCells.Adaptive(108.dp),
                 contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {

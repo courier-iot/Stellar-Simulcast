@@ -53,6 +53,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stellar.simulcast.data.ADULT_RATINGS
+import com.stellar.simulcast.data.CrashLog
+import com.stellar.simulcast.data.DELAY_SERVICES
+import com.stellar.simulcast.data.Downloads
+import com.stellar.simulcast.data.MangaDex
+import com.stellar.simulcast.data.PageFilter
+import com.stellar.simulcast.data.UpdateInfo
+import com.stellar.simulcast.data.Updater
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import com.stellar.simulcast.data.CONTENT_RATINGS
 import com.stellar.simulcast.data.FORMATS
 import com.stellar.simulcast.data.MANGA_LANGUAGES
@@ -174,6 +184,10 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
             }
 
             Section("Display") {
+                ToggleRow("Pure black", "True black background for OLED screens (saves battery)", display.pureBlack) {
+                    Settings.updateDisplay(display.copy(pureBlack = it))
+                }
+                Spacer(Modifier.height(6.dp))
                 Text("Show titles in", color = Space.Text)
                 Spacer(Modifier.height(6.dp))
                 ChipGrid(
@@ -218,6 +232,28 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                         }
                     },
                 ) { Settings.updateDisplay(display.copy(streamDelayMin = it.toInt())) }
+                Spacer(Modifier.height(10.dp))
+                Text("Per service (optional)", color = Space.Text, fontWeight = FontWeight.SemiBold)
+                Text("Shows on several services use the quickest one you set.", color = Space.Muted, fontSize = 12.sp)
+                DELAY_SERVICES.forEach { svc ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(svc, color = Space.Text, fontSize = 13.sp)
+                    ChipGrid(
+                        listOf("default", "0", "30", "60", "120", "180"),
+                        setOf(display.serviceDelays[svc]?.toString() ?: "default"),
+                        label = { m ->
+                            when (m) {
+                                "default" -> "Default"
+                                "0" -> "None"
+                                else -> m.toInt().let { v -> if (v < 60) "+${v}m" else "+${v / 60}h" }
+                            }
+                        },
+                    ) { m ->
+                        val map = display.serviceDelays.toMutableMap()
+                        if (m == "default") map.remove(svc) else map[svc] = m.toInt()
+                        Settings.updateDisplay(display.copy(serviceDelays = map))
+                    }
+                }
                 Spacer(Modifier.height(10.dp))
                 ToggleRow(
                     "English links only",
@@ -291,6 +327,14 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                 }
             }
 
+            // ----- Downloads -----
+            if (Settings.manga.downloads) {
+                Section("Downloaded chapters") { DownloadsManager() }
+            }
+
+            // ----- Crash log -----
+            Section("Crash log") { CrashLogSection() }
+
             // ----- About -----
             Section("About") {
                 Text("STELLAR SIMULCAST", color = Space.Cyan, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
@@ -310,6 +354,11 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, open: (Int) -> Unit) {
                 OutlinedButton(onClick = { runCatching { uri.openUri("https://anilist.co") } }, modifier = Modifier.fillMaxWidth()) {
                     Text("Visit AniList", color = Space.Cyan)
                 }
+                Spacer(Modifier.height(10.dp))
+                ToggleRow("Check for updates", "Once a day, look for a newer release on GitHub", display.updateChecks) {
+                    Settings.updateDisplay(display.copy(updateChecks = it))
+                }
+                UpdateCheckButton()
             }
         }
     }
@@ -320,6 +369,7 @@ private fun MangaSettings() {
     val m = Settings.manga
     var askAdult by remember { mutableStateOf<String?>(null) }
     var askClear by remember { mutableStateOf(false) }
+    var showTags by remember { mutableStateOf(false) }
 
     Section("Manga") {
         ToggleRow(
@@ -357,7 +407,37 @@ private fun MangaSettings() {
         }
         ToggleRow("Right to left", "Page the way Japanese manga is read", m.rtl) { Settings.updateManga(m.copy(rtl = it)) }
         ToggleRow("Data saver", "Lower-quality pages to save mobile data", m.dataSaver) { Settings.updateManga(m.copy(dataSaver = it)) }
+        ToggleRow("Two pages when sideways", "Show pages side by side in landscape (page mode)", m.spreads) { Settings.updateManga(m.copy(spreads = it)) }
+        ToggleRow("Keep screen on", "Stop the screen dimming while you read", m.keepScreenOn) { Settings.updateManga(m.copy(keepScreenOn = it)) }
+        ToggleRow("Volume buttons turn pages", "Volume down for next, up for previous, while reading", m.volumeKeys) {
+            Settings.updateManga(m.copy(volumeKeys = it))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text("Page filter", color = Space.Text)
+        Spacer(Modifier.height(6.dp))
+        ChipGrid(PageFilter.entries.map { it.name }, setOf(m.pageFilter.name), label = { PageFilter.valueOf(it).label }) {
+            Settings.updateManga(m.copy(pageFilter = PageFilter.valueOf(it)))
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Tag filters", color = Space.Text)
+        Text(
+            if (m.includedTags.isEmpty() && m.excludedTags.isEmpty()) "None. Show or hide series by tag, like \"no isekai\"."
+            else listOfNotNull(
+                m.includedTags.takeIf { it.isNotEmpty() }?.joinToString(prefix = "Only: ") { it.substringAfter(":") },
+                m.excludedTags.takeIf { it.isNotEmpty() }?.joinToString(prefix = "Hide: ") { it.substringAfter(":") },
+            ).joinToString("\n"),
+            color = Space.Muted, fontSize = 12.sp,
+        )
+        OutlinedButton(onClick = { showTags = true }, modifier = Modifier.fillMaxWidth()) { Text("Edit tag filters", color = Space.Cyan) }
+        Spacer(Modifier.height(8.dp))
+        ToggleRow(
+            "Chapter downloads",
+            "Save chapters to read offline. They stay in the app's private storage until you delete them.",
+            m.downloads,
+        ) { Settings.updateManga(m.copy(downloads = it)) }
     }
+
+    if (showTags) TagDialog { showTags = false }
 
     askAdult?.let { r ->
         AlertDialog(
@@ -471,4 +551,169 @@ private fun HourStepper(label: String, hour: Int, onChange: (Int) -> Unit) {
         Text(TimeText.hour(hour), color = Space.Cyan, fontFamily = FontFamily.Monospace, fontSize = 16.sp, modifier = Modifier.width(72.dp))
         IconButton(onClick = { onChange((hour + 1) % 24) }) { Icon(Icons.Rounded.Add, "Later", tint = Space.Cyan) }
     }
+}
+
+// ---------- tag filter dialog ----------
+
+@Composable
+private fun TagDialog(onDismiss: () -> Unit) {
+    val tags by produceState<List<MangaDex.Tag>?>(null) { value = runCatching { MangaDex.tags() }.getOrDefault(emptyList()) }
+    var included by remember { mutableStateOf(Settings.manga.includedTags) }
+    var excluded by remember { mutableStateOf(Settings.manga.excludedTags) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Space.Surface,
+        title = { Text("Tag filters", color = Space.Cyan, fontFamily = FontFamily.Monospace) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("Tap once to require a tag, again to hide it, a third time to clear.", color = Space.Muted, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                val list = tags
+                when {
+                    list == null -> CircularProgressIndicator(color = Space.Cyan, modifier = Modifier.size(24.dp))
+                    list.isEmpty() -> Text("Couldn't load tags from MangaDex.", color = Space.Muted)
+                    else -> list.groupBy { it.group }.forEach { (group, items) ->
+                        Text(group.uppercase(), color = Space.Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
+                        items.chunked(2).forEach { row ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 3.dp)) {
+                                row.forEach { t ->
+                                    val key = "${t.id}:${t.name}"
+                                    val state = when (key) {
+                                        in included -> 1
+                                        in excluded -> 2
+                                        else -> 0
+                                    }
+                                    Text(
+                                        when (state) { 1 -> "✓ ${t.name}"; 2 -> "✕ ${t.name}"; else -> t.name },
+                                        color = when (state) { 0 -> Space.Text; else -> Space.Bg },
+                                        fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(when (state) { 1 -> Space.Cyan; 2 -> Space.Magenta; else -> Space.Card })
+                                            .clickable {
+                                                when (state) {
+                                                    0 -> included = included + key
+                                                    1 -> { included = included - key; excluded = excluded + key }
+                                                    else -> excluded = excluded - key
+                                                }
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                                    )
+                                }
+                                if (row.size == 1) Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                Settings.updateManga(Settings.manga.copy(includedTags = included, excludedTags = excluded))
+                onDismiss()
+            }) { Text("Apply", color = Space.Cyan) }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                Settings.updateManga(Settings.manga.copy(includedTags = emptySet(), excludedTags = emptySet()))
+                onDismiss()
+            }) { Text("Clear all", color = Space.Magenta) }
+        },
+    )
+}
+
+// ---------- downloads ----------
+
+@Composable
+private fun DownloadsManager() {
+    val ctx = LocalContext.current
+    val ready by Downloads.ready.collectAsStateWithLifecycle()
+    val list = remember(ready) { Downloads.list(ctx) }
+    val total = list.sumOf { it.bytes }
+    Text("${list.size} chapters · ${"%.1f".format(total / 1_048_576.0)} MB", color = Space.Text)
+    if (list.isEmpty()) {
+        Text("Use the download button next to a chapter on a manga's page.", color = Space.Muted, fontSize = 12.sp)
+        return
+    }
+    list.forEach { d ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(d.mangaTitle, color = Space.Text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${d.chapterLabel} · ${d.pages} pages", color = Space.Muted, fontSize = 11.sp, maxLines = 1)
+            }
+            TextButton(onClick = { Downloads.delete(ctx, d.chapterId) }) { Text("Delete", color = Space.Magenta) }
+        }
+    }
+    OutlinedButton(onClick = { Downloads.deleteAll(ctx) }, modifier = Modifier.fillMaxWidth()) { Text("Delete all downloads", color = Space.Magenta) }
+}
+
+// ---------- crash log ----------
+
+@Composable
+private fun CrashLogSection() {
+    val ctx = LocalContext.current
+    var log by remember { mutableStateOf(CrashLog.read(ctx)) }
+    var show by remember { mutableStateOf(false) }
+    val count = log.split("\n=====\n").count { it.isNotBlank() }
+    Text(
+        if (count == 0) "No crashes recorded. If the app ever crashes, the details are saved here (on this phone only) so you can send them in a bug report."
+        else "$count crash${if (count == 1) "" else "es"} recorded. Share them with whoever's fixing the app.",
+        color = Space.Muted, fontSize = 13.sp,
+    )
+    if (count > 0) {
+        OutlinedButton(onClick = { show = true }, modifier = Modifier.fillMaxWidth()) { Text("View", color = Space.Cyan) }
+        OutlinedButton(onClick = {
+            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(android.content.Intent.EXTRA_TEXT, log)
+            }
+            ctx.startActivity(android.content.Intent.createChooser(send, "Share crash log"))
+        }, modifier = Modifier.fillMaxWidth()) { Text("Share / copy", color = Space.Cyan) }
+        OutlinedButton(onClick = { CrashLog.clear(ctx); log = "" }, modifier = Modifier.fillMaxWidth()) { Text("Clear", color = Space.Magenta) }
+    }
+    if (show) {
+        AlertDialog(
+            onDismissRequest = { show = false },
+            containerColor = Space.Surface,
+            title = { Text("Crash log", color = Space.Cyan) },
+            text = {
+                Text(log, color = Space.Text, fontFamily = FontFamily.Monospace, fontSize = 10.sp,
+                    modifier = Modifier.verticalScroll(rememberScrollState()))
+            },
+            confirmButton = { TextButton(onClick = { show = false }) { Text("Close", color = Space.Cyan) } },
+        )
+    }
+}
+
+// ---------- updates ----------
+
+@Composable
+private fun UpdateCheckButton() {
+    val ctx = LocalContext.current
+    val uri = LocalUriHandler.current
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var found by remember { mutableStateOf<UpdateInfo?>(null) }
+    OutlinedButton(
+        onClick = {
+            if (!checking) {
+                checking = true
+                scope.launch {
+                    val result = runCatching { Updater.check(ctx) }
+                    checking = false
+                    result.onSuccess { info ->
+                        if (info == null) android.widget.Toast.makeText(ctx, "You're on the latest version", android.widget.Toast.LENGTH_SHORT).show()
+                        else found = info
+                    }.onFailure {
+                        android.widget.Toast.makeText(ctx, "Couldn't reach GitHub", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    ) { Text(if (checking) "Checking…" else "Check now", color = Space.Cyan) }
+    found?.let { u -> UpdateDialog(u, onDismiss = { found = null }, openUrl = { runCatching { uri.openUri(it) } }) }
 }

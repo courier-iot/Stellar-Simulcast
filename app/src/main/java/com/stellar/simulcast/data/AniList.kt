@@ -28,11 +28,18 @@ object AniList {
     private fun gql(s: String) = s.replace('%', '$')
 
     private const val MEDIA = """
-        id isAdult format episodes status averageScore genres siteUrl
+        id isAdult type format episodes volumes chapters status averageScore genres siteUrl
         title { romaji english }
         coverImage { large }
         nextAiringEpisode { episode airingAt }
         externalLinks { site url type language }
+    """
+
+    /** Just enough to draw a poster tile. Keeps big queries under AniList's complexity limit. */
+    private const val SMALL = """
+        id isAdult type format episodes status siteUrl
+        title { romaji english }
+        coverImage { large }
     """
 
     private val AIRING = gql(
@@ -147,24 +154,66 @@ object AniList {
             $MEDIA
             description(asHtml: false)
             bannerImage season seasonYear duration source
-            studios(isMain: true) { nodes { name } }
+            studios(isMain: true) { nodes { id name } }
             trailer { id site }
-            airingSchedule(perPage: 50) { nodes { episode airingAt } }
+            airingSchedule(page: 1, perPage: 50) { pageInfo { hasNextPage } nodes { episode airingAt } }
             streamingEpisodes { title url }
-            characters(sort: [ROLE, RELEVANCE], perPage: 12) {
+            characters(sort: [ROLE, RELEVANCE], perPage: 10) {
               edges {
                 role
                 node { name { full } image { medium } }
                 voiceActors(language: JAPANESE) { name { full } }
               }
             }
-            relations {
-              edges {
-                relationType(version: 2)
-                node { type $MEDIA }
-              }
+            relations { edges { relationType(version: 2) node { $SMALL } } }
+            recommendations(sort: RATING_DESC, perPage: 10) { nodes { mediaRecommendation { $SMALL } } }
+            trends(sort: DATE_DESC, perPage: 30) { nodes { date averageScore } }
+          }
+        }
+        """
+    )
+
+    private val AIRING_PAGE = gql(
+        """
+        query (%id: Int, %page: Int) {
+          Media(id: %id) {
+            airingSchedule(page: %page, perPage: 50) { pageInfo { hasNextPage } nodes { episode airingAt } }
+          }
+        }
+        """
+    )
+
+    private val STUDIO = gql(
+        """
+        query (%id: Int, %page: Int) {
+          Studio(id: %id) {
+            id name
+            media(sort: START_DATE_DESC, isMain: true, page: %page, perPage: 30) {
+              pageInfo { hasNextPage }
+              nodes { $MEDIA }
             }
-            trends(sort: DATE_DESC, perPage: 40) { nodes { date averageScore } }
+          }
+        }
+        """
+    )
+
+    private val NOVELS = gql(
+        """
+        query (%page: Int, %sort: [MediaSort], %q: String) {
+          Page(page: %page, perPage: 30) {
+            pageInfo { hasNextPage }
+            media(type: MANGA, format: NOVEL, isAdult: false, sort: %sort, search: %q) { $MEDIA }
+          }
+        }
+        """
+    )
+
+    private val BY_IDS_ANY = gql(
+        """
+        query (%ids: [Int], %page: Int) {
+          Page(page: %page, perPage: 50) {
+            pageInfo { hasNextPage }
+            media(id_in: %ids) { $MEDIA }
           }
         }
         """
@@ -185,6 +234,39 @@ object AniList {
         """
     )
 
+    suspend fun studio(id: Int, page: Int): StudioPage {
+        val st = post(STUDIO, JSONObject().put("id", id).put("page", page)).getJSONObject("Studio")
+        val media = st.optJSONObject("media")
+        return StudioPage(
+            id = id,
+            name = st.str("name") ?: "Studio",
+            shows = media?.optJSONArray("nodes").objects().map { parseAnime(it) }.filter { !it.isAdult },
+            hasMore = media?.optJSONObject("pageInfo")?.optBoolean("hasNextPage") == true,
+        )
+    }
+
+    suspend fun novels(mode: NovelBrowse, page: Int): Paged<Anime> {
+        val sort = when (mode) {
+            NovelBrowse.POPULAR -> "POPULARITY_DESC"
+            NovelBrowse.TRENDING -> "TRENDING_DESC"
+            NovelBrowse.RECENT -> "START_DATE_DESC"
+        }
+        return mediaPage(NOVELS, JSONObject().put("page", page).put("sort", JSONArray().put(sort)).put("q", JSONObject.NULL))
+    }
+
+    suspend fun searchNovels(q: String, page: Int): Paged<Anime> =
+        mediaPage(NOVELS, JSONObject().put("page", page).put("sort", JSONArray().put("SEARCH_MATCH")).put("q", q))
+
+    /** Light novels among the given AniList IDs. */
+    suspend fun novelsByIds(ids: List<Int>): List<Anime> {
+        val out = mutableListOf<Anime>()
+        for (chunk in ids.chunked(50)) {
+            out += mediaPage(BY_IDS_ANY, JSONObject().put("ids", JSONArray(chunk)).put("page", 1), keepAdult = true)
+                .items.filter { it.isNovel }
+        }
+        return out
+    }
+
     /** Anime made from an AniList manga (used for "Watch the anime" on manga pages). */
     suspend fun animeForManga(aniListMangaId: Int): List<Anime> {
         val m = post(MANGA_ADAPTATIONS, JSONObject().put("id", aniListMangaId)).getJSONObject("Media")
@@ -195,15 +277,54 @@ object AniList {
             .distinctBy { it.id }
     }
 
-    private suspend fun post(query: String, vars: JSONObject): JSONObject = withContext(Dispatchers.IO) {
+    // Recent answers are kept in memory for a few minutes, so tabs, the widget and
+    // background checks don't spend AniList's ~30 requests/minute on the same thing.
+    private const val CACHE_MS = 5 * 60_000L
+    private val cache = object : LinkedHashMap<String, Pair<Long, JSONObject>>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Long, JSONObject>>?) = size > 80
+    }
+
+    fun clearCache() = synchronized(cache) { cache.clear() }
+
+    private suspend fun post(query: String, vars: JSONObject): JSONObject {
+        val key = query.hashCode().toString() + vars.toString()
+        synchronized(cache) {
+            cache[key]?.let { (at, data) -> if (System.currentTimeMillis() - at < CACHE_MS) return data }
+        }
+        var attempt = 0
+        while (true) {
+            attempt++
+            val result = withContext(Dispatchers.IO) { send(query, vars) }
+            when (result) {
+                is Sent.Ok -> {
+                    synchronized(cache) { cache[key] = System.currentTimeMillis() to result.data }
+                    return result.data
+                }
+                // Rate limited: wait what AniList asks (up to a minute) and try again, at most twice.
+                is Sent.Limited -> {
+                    if (attempt >= 3 || result.waitSec > 60) {
+                        throw IOException("AniList is busy right now. Try again in a minute.")
+                    }
+                    kotlinx.coroutines.delay(result.waitSec * 1000L + 500)
+                }
+            }
+        }
+    }
+
+    private sealed interface Sent {
+        data class Ok(val data: JSONObject) : Sent
+        data class Limited(val waitSec: Int) : Sent
+    }
+
+    private fun send(query: String, vars: JSONObject): Sent {
         val body = JSONObject().put("query", query).put("variables", vars).toString().toRequestBody(jsonType)
         val request = Request.Builder()
             .url(ENDPOINT)
             .header("Accept", "application/json")
             .post(body)
             .build()
-        client.newCall(request).execute().use { resp ->
-            if (resp.code == 429) throw IOException("AniList is rate limiting us. Wait a minute and try again.")
+        return client.newCall(request).execute().use { resp ->
+            if (resp.code == 429) return@use Sent.Limited(resp.header("Retry-After")?.toIntOrNull() ?: 20)
             val text = resp.body?.string().orEmpty()
             val json = try {
                 JSONObject(text)
@@ -215,7 +336,7 @@ object AniList {
                 val msg = json.optJSONArray("errors")?.optJSONObject(0)?.optString("message")
                 throw IOException(if (msg.isNullOrBlank()) "AniList error (${resp.code})" else msg)
             }
-            data
+            Sent.Ok(data)
         }
     }
 
@@ -284,7 +405,29 @@ object AniList {
 
     suspend fun detail(id: Int): AnimeDetail {
         val m = post(DETAIL, JSONObject().put("id", id)).getJSONObject("Media")
-        val studios = m.optJSONObject("studios")?.optJSONArray("nodes").objects().mapNotNull { it.str("name") }
+        val studioNodes = m.optJSONObject("studios")?.optJSONArray("nodes").objects()
+        val studios = studioNodes.mapNotNull { it.str("name") }
+        val studioId = studioNodes.firstOrNull()?.int("id")
+
+        // Long-running shows have more than 50 air dates; fetch the rest page by page.
+        val airing = m.optJSONObject("airingSchedule")
+        val nodes = airing?.optJSONArray("nodes").objects().toMutableList()
+        var more = airing?.optJSONObject("pageInfo")?.optBoolean("hasNextPage") == true
+        var page = 2
+        while (more && page <= 30) {
+            val next = runCatching {
+                post(AIRING_PAGE, JSONObject().put("id", id).put("page", page))
+                    .getJSONObject("Media").optJSONObject("airingSchedule")
+            }.getOrNull() ?: break
+            nodes += next.optJSONArray("nodes").objects()
+            more = next.optJSONObject("pageInfo")?.optBoolean("hasNextPage") == true
+            page++
+        }
+
+        val recommendations = m.optJSONObject("recommendations")?.optJSONArray("nodes").objects()
+            .mapNotNull { it.optJSONObject("mediaRecommendation") }
+            .map { parseAnime(it) }
+            .filter { !it.isAdult }
         val links = m.optJSONArray("externalLinks").objects()
             .filter { it.optString("type") == "STREAMING" }
             .mapNotNull { l ->
@@ -331,11 +474,13 @@ object AniList {
             duration = m.int("duration"),
             source = m.str("source"),
             links = links,
-            episodeList = episodeList(m),
+            episodeList = episodeList(nodes, m),
             trailerUrl = trailer,
             cast = cast,
             related = related,
             scoreChange = scoreChange(m.optJSONObject("trends")?.optJSONArray("nodes").objects()),
+            recommendations = recommendations,
+            studioId = studioId,
         )
     }
 
@@ -397,14 +542,16 @@ object AniList {
             nextAiringAt = next?.long("airingAt"),
             siteUrl = o.str("siteUrl"),
             isAdult = o.optBoolean("isAdult", false),
+            type = o.str("type") ?: "ANIME",
+            volumes = o.int("volumes"),
+            chapters = o.int("chapters"),
         )
     }
 
     private val episodeTitle = Regex("""^Episode\s+(\d+)\s*[-:–]?\s*(.*)$""", RegexOption.IGNORE_CASE)
 
-    private fun episodeList(m: JSONObject): List<EpisodeInfo> {
-        val dates = m.optJSONObject("airingSchedule")?.optJSONArray("nodes").objects()
-            .associate { it.optInt("episode") to it.optLong("airingAt") }
+    private fun episodeList(airingNodes: List<JSONObject>, m: JSONObject): List<EpisodeInfo> {
+        val dates = airingNodes.associate { it.optInt("episode") to it.optLong("airingAt") }
         val titles = mutableMapOf<Int, Pair<String?, String?>>()
         for (e in m.optJSONArray("streamingEpisodes").objects()) {
             val raw = e.str("title") ?: continue

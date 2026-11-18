@@ -24,7 +24,26 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <receiver
+            android:name=".work.NotifyActionReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".widget.MangaWidgetReceiver"
+            android:exported="true"
+            android:label="Stellar Simulcast · New chapters">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/manga_widget_info" />
+        </receiver>
 
         <receiver
             android:name=".widget.NextUpWidgetReceiver"

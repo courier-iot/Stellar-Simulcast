@@ -72,7 +72,7 @@ enum class MangaBrowse(val label: String) { POPULAR("Popular"), RECENT("Recently
  */
 object MangaDex {
     private const val API = "https://api.mangadex.org"
-    private const val USER_AGENT = "StellarSimulcast/2.1.0 (Android)"
+    private const val USER_AGENT = "StellarSimulcast/2.2.0 (Android)"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -111,6 +111,31 @@ object MangaDex {
 
     private fun langs(key: String): List<Pair<String, String>> = Settings.manga.languages.map { "$key[]" to it }
 
+    /** Your include/exclude tag filters, for manga lists. */
+    private fun tagParams(): List<Pair<String, String>> {
+        val m = Settings.manga
+        return m.includedTags.map { "includedTags[]" to it.substringBefore(":") } +
+            m.excludedTags.map { "excludedTags[]" to it.substringBefore(":") }
+    }
+
+    data class Tag(val id: String, val name: String, val group: String)
+
+    @Volatile
+    private var tagCache: List<Tag>? = null
+
+    /** All MangaDex tags (genres, themes, formats), fetched once per app run. */
+    suspend fun tags(): List<Tag> {
+        tagCache?.let { return it }
+        val json = get("/manga/tag")
+        val list = json.optJSONArray("data").objects().mapNotNull { o ->
+            val a = o.optJSONObject("attributes") ?: return@mapNotNull null
+            val name = localized(a.optJSONObject("name")) ?: return@mapNotNull null
+            Tag(o.getString("id"), name, a.optString("group"))
+        }.sortedWith(compareBy<Tag> { it.group }.thenBy { it.name })
+        tagCache = list
+        return list
+    }
+
     // ---------- public calls ----------
 
     suspend fun browse(mode: MangaBrowse, offset: Int): Paged<Manga> {
@@ -133,7 +158,7 @@ object MangaDex {
     private suspend fun mangaList(params: List<Pair<String, String>>, offset: Int, limit: Int = 30): Paged<Manga> {
         val json = get(
             "/manga",
-            params + ratings() + listOf("limit" to "$limit", "offset" to "$offset", "includes[]" to "cover_art"),
+            params + ratings() + tagParams() + listOf("limit" to "$limit", "offset" to "$offset", "includes[]" to "cover_art"),
         )
         val items = json.optJSONArray("data").objects().map { parseManga(it) }
         val total = json.optInt("total")
@@ -250,9 +275,18 @@ object MangaDex {
     @Volatile
     private var readerLoader: ImageLoader? = null
 
+    @Volatile
+    private var images: OkHttpClient? = null
+
     /** Image loader for chapter pages. Reports each page load to MangaDex as their docs ask. */
     fun readerImageLoader(ctx: Context): ImageLoader {
         readerLoader?.let { return it }
+        return ImageLoader.Builder(ctx.applicationContext).okHttpClient(imageClient()).crossfade(true).build().also { readerLoader = it }
+    }
+
+    /** HTTP client for page images (reader and downloads), with MangaDex@Home reporting. */
+    fun imageClient(): OkHttpClient {
+        images?.let { return it }
         val reporting = Interceptor { chain ->
             val req = chain.request()
             val start = System.currentTimeMillis()
@@ -266,11 +300,13 @@ object MangaDex {
                 throw e
             }
         }
-        val http = OkHttpClient.Builder()
+        return OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
             .addInterceptor { chain -> chain.proceed(chain.request().newBuilder().header("User-Agent", USER_AGENT).build()) }
             .addInterceptor(reporting)
             .build()
-        return ImageLoader.Builder(ctx.applicationContext).okHttpClient(http).crossfade(true).build().also { readerLoader = it }
+            .also { images = it }
     }
 
     private fun report(url: String, success: Boolean, bytes: Long, durationMs: Long, cached: Boolean) {

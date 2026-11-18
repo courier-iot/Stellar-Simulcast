@@ -14,6 +14,9 @@ Show pages have a countdown, break notices, a finish-date estimate, add-to-calen
 ## Manga
 An Anime | Manga switch in the header. Manga mode has Latest, Browse, Search and Library tabs, with an in-app reader for MangaDex chapters (page or scroll mode, right-to-left, zoom, data saver). Reading tracking can be turned off in Settings. Manga data and chapters come live from MangaDex, and every chapter credits its translation group.
 
+## Also in the app
+Your own lists (Watching, Plan to watch, On hold, Dropped, Completed) and 1–10 scores, recommendations, studio pages, light novel tracking, manga tag filters, optional offline chapters, two home screen widgets, notification buttons (Mark watched, Read now), app icon shortcuts, a stats page, phone-to-phone transfer, a crash log, and an update checker for this repo's releases.
+
 ## Releases
 Push to `main` and GitHub Actions builds a signed APK and publishes a release tagged and titled `vX.Y.Z`.
 The version comes from `val appVersion` in `app/build.gradle.kts`.

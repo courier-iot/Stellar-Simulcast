@@ -51,6 +51,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.stellar.simulcast.data.Anime
+import com.stellar.simulcast.data.Lists
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.TimeText
 import kotlinx.coroutines.delay
@@ -66,6 +68,9 @@ data class WatchActions(
 )
 
 val LocalWatch = compositionLocalOf { WatchActions(emptySet(), emptySet(), emptyMap()) {} }
+
+/** Asks for notification permission (if needed) after you follow or star something. */
+val LocalAskNotify = compositionLocalOf<() -> Unit> { {} }
 
 // ---------- time + text helpers ----------
 
@@ -127,7 +132,7 @@ fun airingHeadline(a: Anime, now: Long): String {
     val at = a.nextAiringAt
     val ep = a.nextEpisode
     if (at == null || ep == null) return statusLabel(a.status)
-    val left = TimeText.streamAt(at) - now
+    val left = TimeText.streamAt(at, a) - now
     return if (a.onBreak(now)) "On break · EP $ep ${countdown(left)}" else "EP $ep · ${countdown(left)}"
 }
 
@@ -139,9 +144,14 @@ fun progressBadge(a: Anime, watched: Int?): String? {
     return if (behind > 0) "$behind behind" else "caught up"
 }
 
+/** True when the phone's "remove animations" accessibility setting is on. */
+fun reduceMotion(ctx: android.content.Context): Boolean =
+    android.provider.Settings.Global.getFloat(ctx.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+
 fun metaLine(a: Anime): String = listOfNotNull(
     formatLabel(a.format),
     a.episodes?.let { "$it eps" },
+    a.volumes?.let { "$it vols" },
     a.score?.let { "★ $it%" },
 ).joinToString(" · ")
 
@@ -155,7 +165,16 @@ fun Starfield(modifier: Modifier = Modifier) {
     }
     val a = Space.Magenta
     val b = Space.Cyan
+    val black = Settings.display.pureBlack
     Canvas(modifier.fillMaxSize()) {
+        if (black) {
+            // Pure black for OLED screens: no glow, just a few faint stars.
+            drawRect(Color.Black)
+            stars.forEach { (x, y, s) ->
+                if (s > 0.6f) drawCircle(Color.White.copy(alpha = 0.2f), radius = 0.8f + s, center = Offset(x * size.width, y * size.height))
+            }
+            return@Canvas
+        }
         drawRect(Brush.verticalGradient(listOf(Color(0xFF0A0B1E), Space.Bg, Color(0xFF08030F))))
         val glowA = Offset(size.width * 0.95f, size.height * 0.1f)
         drawCircle(
@@ -216,7 +235,13 @@ fun AnimeRow(
 ) {
     val compact = Settings.display.compact
     val watch = LocalWatch.current
-    val badge = progressBadge(anime, watch.progress[anime.id])
+    val statuses by Lists.animeStatus.collectAsStateWithLifecycle()
+    val scores by Lists.animeScore.collectAsStateWithLifecycle()
+    val badge = listOfNotNull(
+        progressBadge(anime, watch.progress[anime.id]),
+        statuses[anime.id]?.let { if (anime.type == "MANGA") it.manga else it.anime },
+        scores[anime.id]?.let { "you ★$it" },
+    ).joinToString(" · ").ifEmpty { null }
     Row(
         Modifier
             .fillMaxWidth()
@@ -244,7 +269,7 @@ fun AnimeRow(
                 val meta = listOfNotNull(badge, metaLine(anime).takeIf { !compact && it.isNotEmpty() }).joinToString(" · ")
                 if (meta.isNotEmpty()) {
                     Text(
-                        meta, color = if (badge != null && badge.endsWith("behind")) Space.Magenta else Space.Muted,
+                        meta, color = if (badge != null && badge.contains("behind")) Space.Magenta else Space.Muted,
                         style = MaterialTheme.typography.bodySmall, maxLines = 1,
                     )
                 }
@@ -268,7 +293,7 @@ fun PosterTile(anime: Anime, now: Long, onClick: () -> Unit) {
             }
             val bottom = when {
                 anime.nextAiringAt != null && anime.nextEpisode != null ->
-                    "EP ${anime.nextEpisode} ${countdown(TimeText.streamAt(anime.nextAiringAt) - now)}"
+                    "EP ${anime.nextEpisode} ${countdown(TimeText.streamAt(anime.nextAiringAt, anime) - now)}"
                 anime.status == "FINISHED" && anime.episodes != null -> "${anime.episodes} eps · done"
                 else -> null
             }
@@ -325,7 +350,7 @@ fun NeonChip(text: String, selected: Boolean, onClick: () -> Unit) {
             .background(if (selected) Space.Cyan else Space.Card)
             .border(1.dp, (if (selected) Space.Cyan else Space.Muted).copy(alpha = 0.6f), shape)
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 7.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
     )
 }
 
@@ -369,7 +394,7 @@ private fun GridChip(text: String, selected: Boolean, onClick: () -> Unit) {
             .background(if (selected) Space.Cyan else Space.Card)
             .border(1.dp, (if (selected) Space.Cyan else Space.Muted).copy(alpha = 0.5f), shape)
             .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 8.dp),
+            .padding(horizontal = 6.dp, vertical = 11.dp),
     )
 }
 

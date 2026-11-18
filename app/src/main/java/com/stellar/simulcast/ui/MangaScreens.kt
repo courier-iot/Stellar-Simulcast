@@ -51,6 +51,13 @@ import com.stellar.simulcast.data.Manga
 import com.stellar.simulcast.data.MangaBrowse
 import com.stellar.simulcast.data.MangaLibrary
 import com.stellar.simulcast.data.Settings
+import com.stellar.simulcast.data.ListStatus
+import com.stellar.simulcast.data.Lists
+import com.stellar.simulcast.data.NovelBrowse
+import com.stellar.simulcast.data.Watchlist
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 
 /** Opens the reader: manga ID, chapter ID, page. */
 typealias ReadAction = (String, String, Int) -> Unit
@@ -60,8 +67,9 @@ typealias ReadAction = (String, String, Int) -> Unit
 @Composable
 fun FollowButton(id: String) {
     val follows by MangaLibrary.follows.collectAsStateWithLifecycle()
+    val ask = LocalAskNotify.current
     val on = id in follows
-    IconButton(onClick = { MangaLibrary.toggleFollow(id) }) {
+    IconButton(onClick = { if (MangaLibrary.toggleFollow(id)) ask() }) {
         Icon(
             if (on) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder,
             contentDescription = if (on) "Unfollow" else "Follow",
@@ -100,10 +108,11 @@ fun MangaRow(m: Manga, headline: String, headlineColor: androidx.compose.ui.grap
         Column(Modifier.weight(1f)) {
             Text(headline, color = headlineColor, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(m.title, color = Space.Text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis)
-            if (!compact) {
-                val meta = mangaMeta(m)
-                if (meta.isNotEmpty()) Text(meta, color = Space.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1)
-            }
+            val statuses by Lists.mangaStatus.collectAsStateWithLifecycle()
+            val scores by Lists.mangaScore.collectAsStateWithLifecycle()
+            val mine = listOfNotNull(statuses[m.id]?.manga, scores[m.id]?.let { "you ★$it" })
+            val meta = (mine + if (compact) emptyList() else listOf(mangaMeta(m))).filter { it.isNotEmpty() }.joinToString(" · ")
+            if (meta.isNotEmpty()) Text(meta, color = Space.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1)
         }
         FollowButton(m.id)
     }
@@ -173,9 +182,12 @@ fun MangaLatestScreen(vm: MangaViewModel, openManga: (String) -> Unit, read: Rea
 // ---------- Browse ----------
 
 @Composable
-fun MangaBrowseScreen(vm: MangaViewModel, openManga: (String) -> Unit) {
+fun MangaBrowseScreen(vm: MangaViewModel, openManga: (String) -> Unit, openAnime: (Int) -> Unit) {
     val mode by vm.browseMode.collectAsStateWithLifecycle()
     val state by vm.browse.collectAsStateWithLifecycle()
+    val novelMode by vm.novelMode.collectAsStateWithLifecycle()
+    val novels by vm.novels.collectAsStateWithLifecycle()
+    val now = rememberNow()
     LaunchedEffect(Unit) { if (vm.browse.value.items.isEmpty()) vm.loadMoreBrowse() }
 
     Column(Modifier.fillMaxSize()) {
@@ -186,19 +198,49 @@ fun MangaBrowseScreen(vm: MangaViewModel, openManga: (String) -> Unit) {
                 modifier = Modifier.weight(1f),
             ) {
                 items(MangaBrowse.entries.toList()) { m ->
-                    NeonChip(m.label, m == mode) { vm.setBrowseMode(m) }
+                    NeonChip(m.label, novelMode == null && m == mode) { vm.setNovelMode(null); vm.setBrowseMode(m) }
+                }
+                items(NovelBrowse.entries.toList()) { n ->
+                    NeonChip(n.label, novelMode == n) { vm.setNovelMode(n) }
                 }
             }
-            IconButton(onClick = { state.items.randomOrNull()?.let { openManga(it.id) } }, enabled = state.items.isNotEmpty()) {
+            IconButton(
+                onClick = {
+                    if (novelMode != null) novels.items.randomOrNull()?.let { openAnime(it.id) }
+                    else state.items.randomOrNull()?.let { openManga(it.id) }
+                },
+                enabled = if (novelMode != null) novels.items.isNotEmpty() else state.items.isNotEmpty(),
+            ) {
                 Icon(Icons.Rounded.Casino, contentDescription = "Pick something for me", tint = Space.Magenta)
             }
+        }
+        if (novelMode != null) {
+            when {
+                novels.items.isEmpty() && novels.loading -> LoadingView()
+                novels.items.isEmpty() && novels.error != null -> ErrorView(novels.error ?: "") { vm.loadMoreNovels() }
+                else -> LazyVerticalGrid(
+                    columns = GridCells.Adaptive(108.dp),
+                    contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    items(novels.items, key = { "n" + it.id }) { a -> PosterTile(a, now) { openAnime(a.id) } }
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Column {
+                            ListFooter(novels.loading, novels.error, novels.hasMore, novels.items.size) { vm.loadMoreNovels() }
+                            Text("Light novel info from AniList. Tracking only: read them from official publishers.",
+                                color = Space.Muted, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                        }
+                    }
+                }
+            }
+            return@Column
         }
         when {
             state.items.isEmpty() && state.loading -> LoadingView()
             state.items.isEmpty() && state.error != null -> ErrorView(state.error ?: "") { vm.loadMoreBrowse() }
             state.items.isEmpty() && !state.hasMore -> EmptyView("Nothing here", "Try another list or check your content settings.")
             else -> LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
+                columns = GridCells.Adaptive(108.dp),
                 contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
@@ -217,16 +259,19 @@ fun MangaBrowseScreen(vm: MangaViewModel, openManga: (String) -> Unit) {
 // ---------- Search ----------
 
 @Composable
-fun MangaSearchScreen(vm: MangaViewModel, openManga: (String) -> Unit) {
+fun MangaSearchScreen(vm: MangaViewModel, openManga: (String) -> Unit, openAnime: (Int) -> Unit) {
     val query by vm.query.collectAsStateWithLifecycle()
     val state by vm.search.collectAsStateWithLifecycle()
+    val novelsOn by vm.searchNovels.collectAsStateWithLifecycle()
+    val novelState by vm.novelSearch.collectAsStateWithLifecycle()
+    val now = rememberNow()
 
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
             value = query,
             onValueChange = { vm.setQuery(it) },
             singleLine = true,
-            placeholder = { Text("Search manga", color = Space.Muted) },
+            placeholder = { Text(if (novelsOn) "Search light novels" else "Search manga", color = Space.Muted) },
             leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = Space.Cyan) },
             trailingIcon = {
                 if (query.isNotEmpty()) {
@@ -245,6 +290,25 @@ fun MangaSearchScreen(vm: MangaViewModel, openManga: (String) -> Unit) {
             ),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         )
+        Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            NeonChip("Manga", !novelsOn) { vm.setSearchNovels(false) }
+            NeonChip("Light novels", novelsOn) { vm.setSearchNovels(true) }
+        }
+        if (novelsOn) {
+            when {
+                query.isBlank() -> EmptyView("Find a light novel", "Search AniList's light novel listings.")
+                novelState.items.isEmpty() && novelState.loading -> LoadingView()
+                novelState.items.isEmpty() && novelState.error != null -> ErrorView(novelState.error ?: "") { vm.setQuery(query) }
+                novelState.items.isEmpty() -> EmptyView("No matches", "Try another spelling.")
+                else -> LazyColumn(contentPadding = PaddingValues(vertical = 6.dp)) {
+                    items(novelState.items, key = { "n" + it.id }) { a ->
+                        AnimeRow(a, headline = "Light novel · " + statusLabel(a.status), onClick = { openAnime(a.id) })
+                    }
+                    item { ListFooter(novelState.loading, novelState.error, novelState.hasMore, novelState.items.size) { vm.loadMoreNovelSearch() } }
+                }
+            }
+            return@Column
+        }
         when {
             query.isBlank() -> EmptyView("Find a manga", "Search MangaDex by English or Japanese title.")
             state.items.isEmpty() && state.loading -> LoadingView()
@@ -263,23 +327,37 @@ fun MangaSearchScreen(vm: MangaViewModel, openManga: (String) -> Unit) {
 // ---------- Library ----------
 
 @Composable
-fun MangaLibraryScreen(vm: MangaViewModel, openManga: (String) -> Unit, read: ReadAction) {
+fun MangaLibraryScreen(vm: MangaViewModel, openManga: (String) -> Unit, read: ReadAction, openAnime: (Int) -> Unit) {
     val follows by MangaLibrary.follows.collectAsStateWithLifecycle()
     val marks by MangaLibrary.marks.collectAsStateWithLifecycle()
+    val statuses by Lists.mangaStatus.collectAsStateWithLifecycle()
+    val animeStatuses by Lists.animeStatus.collectAsStateWithLifecycle()
+    val starred by Watchlist.ids.collectAsStateWithLifecycle()
+    val novelState by vm.novelLibrary.collectAsStateWithLifecycle()
+    var filter by rememberSaveable { mutableStateOf<String?>(null) }
+    // Light novels you've starred or put on a list (AniList IDs; only novels come back).
+    val novelIds = starred + animeStatuses.keys
+    LaunchedEffect(novelIds) { vm.loadNovelLibrary(novelIds) }
     val state by vm.library.collectAsStateWithLifecycle()
     val counts by vm.newCounts.collectAsStateWithLifecycle()
     val tracking = Settings.manga.trackReading
 
     // Library shows followed manga plus anything you've started reading.
-    val ids = follows + marks.keys
+    val ids = follows + marks.keys + statuses.keys
     LaunchedEffect(ids) {
         val loaded = (vm.library.value as? Load.Ready)?.data?.map { it.id }?.toSet()
         if (loaded == null || !loaded.containsAll(ids)) vm.loadLibrary(ids)
     }
 
     Column(Modifier.fillMaxSize()) {
-        ToolbarRow("Your library", onRefresh = { vm.loadLibrary(ids) })
-        if (ids.isEmpty()) {
+        ToolbarRow("Your library", onRefresh = { vm.loadLibrary(ids); vm.loadNovelLibrary(novelIds) })
+        LazyRow(contentPadding = PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { NeonChip("All", filter == null) { filter = null } }
+            items(ListStatus.entries.toList()) { st -> NeonChip(st.manga, filter == st.name) { filter = st.name } }
+        }
+        val novelList = (novelState as? Load.Ready)?.data.orEmpty()
+            .filter { filter == null || animeStatuses[it.id]?.name == filter }
+        if (ids.isEmpty() && novelList.isEmpty()) {
             EmptyView("Library is empty", "Tap the bookmark on any manga to follow it. Followed manga get new-chapter alerts.")
             return@Column
         }
@@ -320,13 +398,18 @@ fun MangaLibraryScreen(vm: MangaViewModel, openManga: (String) -> Unit, read: Re
                     }
                     item {
                         Text(
-                            "FOLLOWING", color = Space.Muted, fontFamily = FontFamily.Monospace,
+                            if (filter == null) "FOLLOWING" else "MANGA", color = Space.Muted, fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp, letterSpacing = 2.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp),
                         )
                     }
-                    val followed = s.data.filter { it.id in follows }
+                    val followed = s.data.filter {
+                        if (filter == null) it.id in follows else statuses[it.id]?.name == filter
+                    }
                     if (followed.isEmpty()) {
-                        item { Text("Not following anything yet.", color = Space.Muted, modifier = Modifier.padding(16.dp)) }
+                        item {
+                            Text(if (filter == null) "Not following anything yet." else "Nothing on this list yet.",
+                                color = Space.Muted, modifier = Modifier.padding(16.dp))
+                        }
                     }
                     items(followed, key = { "f" + it.id }) { m ->
                         val mark = marks[m.id]
@@ -338,6 +421,17 @@ fun MangaLibraryScreen(vm: MangaViewModel, openManga: (String) -> Unit, read: Re
                             else -> "On Ch. ${mark.chapter ?: "?"}"
                         }
                         MangaRow(m, headline, headlineColor = if ((newCount ?: 0) > 0) Space.Magenta else Space.Cyan) { openManga(m.id) }
+                    }
+                    if (novelList.isNotEmpty()) {
+                        item {
+                            Text(
+                                "LIGHT NOVELS", color = Space.Muted, fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp, letterSpacing = 2.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp),
+                            )
+                        }
+                        items(novelList, key = { "nl" + it.id }) { a ->
+                            AnimeRow(a, headline = "Light novel · " + statusLabel(a.status), onClick = { openAnime(a.id) })
+                        }
                     }
                     item { Credit() }
                 }

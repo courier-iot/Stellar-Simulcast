@@ -39,6 +39,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stellar.simulcast.data.AniList
 import com.stellar.simulcast.data.Anime
+import com.stellar.simulcast.data.ListStatus
+import com.stellar.simulcast.data.Lists
 import com.stellar.simulcast.data.MangaLibrary
 import com.stellar.simulcast.data.Watchlist
 import java.time.LocalDate
@@ -50,6 +52,10 @@ fun StatsScreen(onBack: () -> Unit) {
     val progress by Watchlist.progress.collectAsStateWithLifecycle()
     val follows by MangaLibrary.follows.collectAsStateWithLifecycle()
     val marks by MangaLibrary.marks.collectAsStateWithLifecycle()
+    val animeStatus by Lists.animeStatus.collectAsStateWithLifecycle()
+    val mangaStatus by Lists.mangaStatus.collectAsStateWithLifecycle()
+    val animeScores by Lists.animeScore.collectAsStateWithLifecycle()
+    val mangaScores by Lists.mangaScore.collectAsStateWithLifecycle()
 
     val shows by produceState<List<Anime>?>(null, ids, progress.keys) {
         value = runCatching { AniList.byIds((ids + progress.keys).toList()) }.getOrDefault(emptyList())
@@ -90,6 +96,26 @@ fun StatsScreen(onBack: () -> Unit) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatTile("Day streak", streak.toString(), Modifier.weight(1f), accent = Space.Magenta)
                 StatTile("Active days this month", thisMonth.toString(), Modifier.weight(1f), accent = Space.Magenta)
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val allScores = animeScores.values + mangaScores.values
+                StatTile("Completed", (animeStatus.values.count { it == ListStatus.COMPLETED } + mangaStatus.values.count { it == ListStatus.COMPLETED }).toString(), Modifier.weight(1f))
+                StatTile("Your average score", if (allScores.isEmpty()) "–" else "%.1f".format(allScores.average()), Modifier.weight(1f))
+            }
+
+            // Lists at a glance
+            Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp).neonPanel().padding(14.dp)) {
+                StatLabel("Your lists")
+                ListStatus.entries.forEach { st ->
+                    val a = animeStatus.values.count { it == st }
+                    val m = mangaStatus.values.count { it == st }
+                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                        Text(st.anime, color = Space.Text, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                        Text("$a anime · $m manga", color = Space.Muted, fontSize = 13.sp)
+                    }
+                }
             }
 
             // Last 5 weeks, one square per day.

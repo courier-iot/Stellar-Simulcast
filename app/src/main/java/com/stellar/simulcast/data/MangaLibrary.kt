@@ -94,6 +94,16 @@ object MangaLibrary {
             prefs?.edit()?.putLong(KEY_LAST_CHECK, value)?.apply()
         }
 
+    /**
+     * The latest new chapters found by alerts, newest first, for the manga widget.
+     * Each entry: "mangaId|chapterId|label|epochSeconds". Only IDs and chapter numbers.
+     */
+    var recentNew: List<String>
+        get() = prefs?.getString("manga_recent_new", null)?.split("\n")?.filter { it.isNotBlank() }.orEmpty()
+        set(value) {
+            prefs?.edit()?.putString("manga_recent_new", value.take(12).joinToString("\n"))?.apply()
+        }
+
     /** Chapter IDs we've already sent an alert for (keeps the most recent few hundred). */
     var notified: Set<String>
         get() = prefs?.getStringSet(KEY_NOTIFIED, emptySet()).orEmpty().toSet()

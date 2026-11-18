@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stellar.simulcast.data.Load
+import com.stellar.simulcast.data.ListStatus
+import com.stellar.simulcast.data.Lists
 import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.TimeText
 import com.stellar.simulcast.data.Watchlist
@@ -80,7 +82,7 @@ fun ScheduleScreen(vm: AppViewModel, open: (Int) -> Unit) {
                         filters.matches(it.anime)
                 }
                 val byDay = eps.groupBy {
-                    Instant.ofEpochSecond(TimeText.streamAt(it.airingAt)).atZone(zone).toLocalDate()
+                    Instant.ofEpochSecond(TimeText.streamAt(it.airingAt, it.anime)).atZone(zone).toLocalDate()
                 }
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 12.dp),
@@ -109,7 +111,7 @@ fun ScheduleScreen(vm: AppViewModel, open: (Int) -> Unit) {
                 } else {
                     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
                         items(list, key = { it.id }) { ep ->
-                            val at = TimeText.streamAt(ep.airingAt)
+                            val at = TimeText.streamAt(ep.airingAt, ep.anime)
                             val left = at - now
                             AnimeRow(
                                 ep.anime,
@@ -166,7 +168,7 @@ fun JustAiredScreen(vm: AppViewModel, open: (Int) -> Unit) {
             is Load.Error -> ErrorView(s.message) { vm.loadRecent(force = true) }
             is Load.Ready -> {
                 val eps = s.data.filter {
-                    val at = TimeText.streamAt(it.airingAt)
+                    val at = TimeText.streamAt(it.airingAt, it.anime)
                     at <= now && now - at <= 48 * 3600 &&
                         (!onlyWatch || it.anime.id in watch.ids) &&
                         it.anime.id !in watch.hidden &&
@@ -185,7 +187,7 @@ fun JustAiredScreen(vm: AppViewModel, open: (Int) -> Unit) {
                             val epText = if (total != null) "EP ${ep.episode}/$total" else "EP ${ep.episode}"
                             AnimeRow(
                                 ep.anime,
-                                headline = "$epText · ${ago(now - TimeText.streamAt(ep.airingAt))}",
+                                headline = "$epText · ${ago(now - TimeText.streamAt(ep.airingAt, ep.anime))}",
                                 headlineColor = Space.Magenta,
                                 onClick = { open(ep.anime.id) },
                             )
@@ -203,24 +205,39 @@ fun JustAiredScreen(vm: AppViewModel, open: (Int) -> Unit) {
 fun WatchlistScreen(vm: AppViewModel, open: (Int) -> Unit) {
     val watch = LocalWatch.current
     val state by vm.watchlist.collectAsStateWithLifecycle()
+    val statuses by Lists.animeStatus.collectAsStateWithLifecycle()
+    var filter by rememberSaveable { mutableStateOf<String?>(null) }
     val now = rememberNow()
+    // Starred shows plus anything on one of your lists.
+    val ids = watch.ids + statuses.keys
 
-    LaunchedEffect(watch.ids) {
+    LaunchedEffect(ids) {
         val current = vm.watchlist.value
         val loaded = (current as? Load.Ready)?.data?.map { it.id }?.toSet()
-        if (loaded == null || !loaded.containsAll(watch.ids)) vm.loadWatchlist(watch.ids)
+        if (loaded == null || !loaded.containsAll(ids)) vm.loadWatchlist(ids)
     }
 
     Column(Modifier.fillMaxSize()) {
         AlertsPanel()
-        if (watch.ids.isEmpty()) {
+        LazyRow(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { NeonChip("★ Starred", filter == null) { filter = null } }
+            items(ListStatus.entries.toList()) { st -> NeonChip(st.anime, filter == st.name) { filter = st.name } }
+        }
+        if (ids.isEmpty()) {
             EmptyView("Nothing starred yet", "Tap the ☆ on any show to keep it here and get a ping when new episodes drop.")
         } else {
             when (val s = state) {
                 Load.Loading -> LoadingView()
-                is Load.Error -> ErrorView(s.message) { vm.loadWatchlist(watch.ids) }
+                is Load.Error -> ErrorView(s.message) { vm.loadWatchlist(ids) }
                 is Load.Ready -> {
-                    val list = s.data.filter { it.id in watch.ids }
+                    val list = s.data.filter { if (filter == null) it.id in watch.ids else statuses[it.id]?.name == filter }
+                    if (list.isEmpty()) {
+                        EmptyView(
+                            if (filter == null) "Nothing starred" else "Nothing on this list",
+                            "Set a list or tap ☆ on a show's page to add it here.",
+                        )
+                        return@Column
+                    }
                     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
                         items(list, key = { it.id }) { a ->
                             AnimeRow(

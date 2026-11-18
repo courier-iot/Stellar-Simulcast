@@ -98,7 +98,7 @@ private fun WidgetBody(
             upcoming == null -> Note("Couldn't reach AniList. Tap to open the app.")
             upcoming.isEmpty() -> Note("None of your starred shows have an episode scheduled.")
             else -> upcoming.forEach { a ->
-                val at = TimeText.streamAt(a.nextAiringAt ?: 0L)
+                val at = TimeText.streamAt(a.nextAiringAt ?: 0L, a)
                 Row(GlanceModifier.fillMaxWidth().padding(vertical = 3.dp)) {
                     Text(
                         a.name(lang),

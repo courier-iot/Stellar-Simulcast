@@ -2,6 +2,9 @@ package com.stellar.simulcast.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stellar.simulcast.data.AniList
+import com.stellar.simulcast.data.Anime
+import com.stellar.simulcast.data.NovelBrowse
 import com.stellar.simulcast.data.LatestChapter
 import com.stellar.simulcast.data.Load
 import com.stellar.simulcast.data.Manga
@@ -34,6 +37,57 @@ class MangaViewModel : ViewModel() {
     val query = MutableStateFlow("")
     val search = MutableStateFlow(MPaged<Manga>(hasMore = false))
     val library = MutableStateFlow<Load<List<Manga>>>(Load.Loading)
+
+    // Light novels (tracking only, from AniList).
+    /** Non-null while Browse shows a light-novel list instead of a manga list. */
+    val novelMode = MutableStateFlow<NovelBrowse?>(null)
+    val novels = MutableStateFlow(MPaged<Anime>())
+    val searchNovels = MutableStateFlow(false)
+    val novelSearch = MutableStateFlow(MPaged<Anime>(hasMore = false))
+    val novelLibrary = MutableStateFlow<Load<List<Anime>>>(Load.Loading)
+    private var novelJob: Job? = null
+    private var novelSearchJob: Job? = null
+
+    fun setNovelMode(mode: NovelBrowse?) {
+        novelMode.value = mode
+        if (mode == null) return
+        novelJob?.cancel()
+        novels.value = MPaged()
+        loadMoreNovels()
+    }
+
+    fun loadMoreNovels() {
+        val mode = novelMode.value ?: return
+        val cur = novels.value
+        if (cur.loading || !cur.hasMore) return
+        novels.value = cur.copy(loading = true, error = null)
+        novelJob = viewModelScope.launch {
+            // AniList pages are 1-based; offset here counts pages.
+            novels.value = merge(cur, attempt { AniList.novels(mode, cur.offset + 1) }, 1) { it.id }
+        }
+    }
+
+    fun setSearchNovels(on: Boolean) {
+        searchNovels.value = on
+        setQuery(query.value)
+    }
+
+    fun loadMoreNovelSearch() {
+        val cur = novelSearch.value
+        val q = query.value.trim()
+        if (cur.loading || !cur.hasMore || q.isEmpty()) return
+        novelSearch.value = cur.copy(loading = true, error = null)
+        novelSearchJob = viewModelScope.launch {
+            novelSearch.value = merge(cur, attempt { AniList.searchNovels(q, cur.offset + 1) }, 1) { it.id }
+        }
+    }
+
+    fun loadNovelLibrary(ids: Set<Int>) {
+        viewModelScope.launch {
+            if (novelLibrary.value !is Load.Ready) novelLibrary.value = Load.Loading
+            novelLibrary.value = attempt { if (ids.isEmpty()) emptyList() else AniList.novelsByIds(ids.toList()) }
+        }
+    }
 
     /** Manga ID -> chapters newer than where you left off. */
     val newCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
@@ -104,8 +158,18 @@ class MangaViewModel : ViewModel() {
     fun setQuery(q: String) {
         query.value = q
         searchJob?.cancel()
+        novelSearchJob?.cancel()
         if (q.isBlank()) {
             search.value = MPaged(hasMore = false)
+            novelSearch.value = MPaged(hasMore = false)
+            return
+        }
+        if (searchNovels.value) {
+            novelSearch.value = MPaged(loading = true)
+            novelSearchJob = viewModelScope.launch {
+                delay(450)
+                novelSearch.value = merge(MPaged(), attempt { AniList.searchNovels(q.trim(), 1) }, 1) { it.id }
+            }
             return
         }
         search.value = MPaged(loading = true)

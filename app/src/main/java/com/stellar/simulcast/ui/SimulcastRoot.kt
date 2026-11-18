@@ -58,7 +58,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.stellar.simulcast.data.MangaLibrary
 import com.stellar.simulcast.data.Settings
+import com.stellar.simulcast.data.UpdateInfo
+import com.stellar.simulcast.data.Updater
+import androidx.compose.runtime.remember
 import com.stellar.simulcast.data.Watchlist
 import com.stellar.simulcast.work.Notifier
 
@@ -80,7 +84,12 @@ enum class Tab(val label: String, val icon: ImageVector) {
 }
 
 @Composable
-fun SimulcastRoot(openAnime: MutableState<Int?>, openManga: MutableState<String?>) {
+fun SimulcastRoot(
+    openAnime: MutableState<Int?>,
+    openManga: MutableState<String?>,
+    openRead: MutableState<String?>,
+    shortcut: MutableState<String?>,
+) {
     val vm: AppViewModel = viewModel()
     val mvm: MangaViewModel = viewModel()
     val uri = LocalUriHandler.current
@@ -89,6 +98,8 @@ fun SimulcastRoot(openAnime: MutableState<Int?>, openManga: MutableState<String?
     var showStats by rememberSaveable { mutableStateOf(false) }
     // Reader target saved as "mangaId|chapterId|page" so it survives rotation.
     var reading by rememberSaveable { mutableStateOf<String?>(null) }
+    var studio by rememberSaveable { mutableStateOf<Int?>(null) }
+    var update by remember { mutableStateOf<UpdateInfo?>(null) }
     val ctx = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(Tab.SCHEDULE) }
     var showFilters by rememberSaveable { mutableStateOf(false) }
@@ -98,12 +109,14 @@ fun SimulcastRoot(openAnime: MutableState<Int?>, openManga: MutableState<String?
     val progress by Watchlist.progress.collectAsStateWithLifecycle()
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
-    val toggle: (Int) -> Unit = { id ->
-        val added = Watchlist.toggle(id)
-        // First time something is starred, ask for notification permission so alerts can show.
-        if (added && Watchlist.alerts.value && Build.VERSION.SDK_INT >= 33 && !Notifier.canNotify(ctx)) {
+    // When you star a show or follow a manga, ask for notification permission so alerts can show.
+    val askNotify: () -> Unit = {
+        if (Watchlist.alerts.value && Build.VERSION.SDK_INT >= 33 && !Notifier.canNotify(ctx)) {
             permission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+    val toggle: (Int) -> Unit = { id ->
+        if (Watchlist.toggle(id)) askNotify()
     }
     val open: (Int) -> Unit = { openAnime.value = it }
     val openMangaPage: (String) -> Unit = { openManga.value = it }
@@ -116,6 +129,35 @@ fun SimulcastRoot(openAnime: MutableState<Int?>, openManga: MutableState<String?
     LaunchedEffect(mangaPrefs) { mvm.applyPrefs(mangaPrefs) }
     // A manga notification should land in manga mode.
     LaunchedEffect(openManga.value) { if (openManga.value != null) mode = Mode.MANGA }
+    // "Read now" on a chapter alert.
+    LaunchedEffect(openRead.value) {
+        openRead.value?.let {
+            mode = Mode.MANGA
+            reading = it
+            openRead.value = null
+        }
+    }
+    // Long-press app shortcuts.
+    LaunchedEffect(shortcut.value) {
+        when (shortcut.value) {
+            "schedule" -> { mode = Mode.ANIME; tab = Tab.SCHEDULE }
+            "search" -> { mode = Mode.ANIME; tab = Tab.SEARCH }
+            "continue" -> {
+                mode = Mode.MANGA
+                mangaTab = MangaTab.LIBRARY
+                MangaLibrary.marks.value.maxByOrNull { it.value.at }?.let { (mid, mark) ->
+                    reading = "$mid|${mark.chapterId}|${mark.page}"
+                }
+            }
+        }
+        shortcut.value = null
+    }
+    // Once a day, check GitHub for a newer release.
+    LaunchedEffect(Unit) {
+        if (Settings.display.updateChecks && Updater.due()) {
+            update = runCatching { Updater.check(ctx) }.getOrNull()
+        }
+    }
 
     // "Larger text" scales every font in the app by 15%.
     val density = LocalDensity.current
@@ -123,6 +165,7 @@ fun SimulcastRoot(openAnime: MutableState<Int?>, openManga: MutableState<String?
 
     CompositionLocalProvider(
         LocalWatch provides WatchActions(ids, hidden, progress, toggle),
+        LocalAskNotify provides askNotify,
         LocalDensity provides scaled,
     ) {
         Box(Modifier.fillMaxSize()) {
@@ -185,9 +228,9 @@ fun SimulcastRoot(openAnime: MutableState<Int?>, openManga: MutableState<String?
                     } else {
                         when (mangaTab) {
                             MangaTab.LATEST -> MangaLatestScreen(mvm, openMangaPage, read, openUrl)
-                            MangaTab.BROWSE -> MangaBrowseScreen(mvm, openMangaPage)
-                            MangaTab.SEARCH -> MangaSearchScreen(mvm, openMangaPage)
-                            MangaTab.LIBRARY -> MangaLibraryScreen(mvm, openMangaPage, read)
+                            MangaTab.BROWSE -> MangaBrowseScreen(mvm, openMangaPage, open)
+                            MangaTab.SEARCH -> MangaSearchScreen(mvm, openMangaPage, open)
+                            MangaTab.LIBRARY -> MangaLibraryScreen(mvm, openMangaPage, read, open)
                         }
                     }
                 }
@@ -213,7 +256,13 @@ fun SimulcastRoot(openAnime: MutableState<Int?>, openManga: MutableState<String?
             val detailId = openAnime.value
             if (detailId != null) {
                 BackHandler { openAnime.value = null }
-                DetailScreen(detailId, onBack = { openAnime.value = null }, open = open, openManga = openMangaPage)
+                DetailScreen(detailId, onBack = { openAnime.value = null }, open = open, openManga = openMangaPage, openStudio = { studio = it })
+            }
+
+            val studioId = studio
+            if (studioId != null) {
+                BackHandler { studio = null }
+                StudioScreen(studioId, onBack = { studio = null }, open = { studio = null; open(it) })
             }
 
             val r = reading?.split("|")
@@ -223,6 +272,10 @@ fun SimulcastRoot(openAnime: MutableState<Int?>, openManga: MutableState<String?
             }
 
             if (showFilters) FilterDialog(onDismiss = { showFilters = false })
+
+            update?.let { u ->
+                UpdateDialog(u, onDismiss = { update = null }, openUrl = openUrl)
+            }
         }
     }
 }
@@ -303,4 +356,20 @@ private fun ModeSwitch(mode: Mode, onMode: (Mode) -> Unit) {
             )
         }
     }
+}
+
+@Composable
+fun UpdateDialog(u: UpdateInfo, onDismiss: () -> Unit, openUrl: (String) -> Unit) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Space.Surface,
+        title = { Text("Update available: v${u.version}", color = Space.Cyan) },
+        text = { Text("A newer Stellar Simulcast is on GitHub. Download the APK and open it to install over this version.", color = Space.Text) },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { openUrl(u.apkUrl ?: u.pageUrl); onDismiss() }) {
+                Text("Download", color = Space.Cyan)
+            }
+        },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Later", color = Space.Muted) } },
+    )
 }

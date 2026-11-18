@@ -17,7 +17,13 @@ data class Anime(
     val nextAiringAt: Long?,
     val siteUrl: String?,
     val isAdult: Boolean,
+    /** "ANIME" or "MANGA" (light novels are MANGA with format NOVEL). */
+    val type: String = "ANIME",
+    val volumes: Int? = null,
+    val chapters: Int? = null,
 ) {
+    val isNovel: Boolean get() = format == "NOVEL"
+
     fun name(lang: TitleLang): String = when (lang) {
         TitleLang.ENGLISH -> english ?: romaji
         TitleLang.ROMAJI -> romaji ?: english
@@ -71,7 +77,13 @@ data class AnimeDetail(
     val related: List<Related>,
     /** Change in average score over roughly the last month, if known. */
     val scoreChange: Int?,
+    val recommendations: List<Anime> = emptyList(),
+    val studioId: Int? = null,
 )
+
+data class StudioPage(val id: Int, val name: String, val shows: List<Anime>, val hasMore: Boolean)
+
+enum class NovelBrowse(val label: String) { POPULAR("Popular novels"), TRENDING("Trending novels"), RECENT("New novels") }
 
 data class Paged<T>(val items: List<T>, val hasMore: Boolean)
 

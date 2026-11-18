@@ -24,9 +24,10 @@ fun paletteFor(id: String): Palette = PALETTES.firstOrNull { it.id == id } ?: PA
  * (they read Compose state, so the whole app recolors instantly).
  */
 object Space {
-    val Bg = Color(0xFF05060F)
-    val Surface = Color(0xFF0D1024)
-    val Card = Color(0xCC0F1330)
+    private val black: Boolean get() = Settings.display.pureBlack
+    val Bg: Color get() = if (black) Color.Black else Color(0xFF05060F)
+    val Surface: Color get() = if (black) Color(0xFF050507) else Color(0xFF0D1024)
+    val Card: Color get() = if (black) Color(0xFF0B0B10) else Color(0xCC0F1330)
     val Text = Color(0xFFE6F1FF)
     val Muted = Color(0xFF8A93B8)
     val Cyan: Color get() = paletteFor(Settings.display.accent).primary

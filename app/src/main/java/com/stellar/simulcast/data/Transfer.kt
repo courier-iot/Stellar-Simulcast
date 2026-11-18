@@ -16,8 +16,26 @@ import java.util.zip.GZIPOutputStream
 object Transfer {
     private const val PREFIX = "SSIM1:"
 
-    /** QR codes start getting hard to scan past roughly this many characters. */
-    const val QR_LIMIT = 2200
+    /** Characters per QR code. Bigger exports are split into several codes scanned in a row. */
+    const val QR_PART = 1200
+    private const val PART_PREFIX = "SSIMP:"
+
+    /** Splits a code into QR-sized parts: "SSIMP:1/3:…". */
+    fun parts(code: String): List<String> {
+        if (code.length <= QR_PART) return listOf(code)
+        val chunks = code.chunked(QR_PART)
+        return chunks.mapIndexed { i, c -> "$PART_PREFIX${i + 1}/${chunks.size}:$c" }
+    }
+
+    /** Reads one scanned part. Returns (index, total, data), or null if it isn't a part. */
+    fun parsePart(scan: String): Triple<Int, Int, String>? {
+        if (!scan.startsWith(PART_PREFIX)) return null
+        val rest = scan.removePrefix(PART_PREFIX)
+        val head = rest.substringBefore(":")
+        val i = head.substringBefore("/").toIntOrNull() ?: return null
+        val n = head.substringAfter("/").toIntOrNull() ?: return null
+        return Triple(i, n, rest.substringAfter(":"))
+    }
 
     fun export(ctx: Context): String {
         val p = ctx.getSharedPreferences("simulcast", Context.MODE_PRIVATE)
@@ -68,6 +86,8 @@ object Transfer {
         Watchlist.init(ctx, force = true)
         Settings.init(ctx, force = true)
         MangaLibrary.init(ctx, force = true)
+        Lists.init(ctx, force = true)
+        AniList.clearCache()
         return true
     }
 }
