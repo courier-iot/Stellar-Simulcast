@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Neon play button broadcasting signal waves, with a couple of stars. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:fillAlpha="0.7"
+        android:pathData="M31,33 m-1,0 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0" />
+    <path android:fillColor="#FFFFFF" android:fillAlpha="0.5"
+        android:pathData="M78,30 m-0.8,0 a0.8,0.8 0 1,0 1.6,0 a0.8,0.8 0 1,0 -1.6,0" />
+    <path android:fillColor="#FFFFFF" android:fillAlpha="0.6"
+        android:pathData="M76,79 m-0.9,0 a0.9,0.9 0 1,0 1.8,0 a0.9,0.9 0 1,0 -1.8,0" />
+    <path android:fillColor="#00E5FF"
+        android:pathData="M48,43.5 L48,64.5 L64.5,54 Z" />
+    <path android:strokeColor="#00E5FF" android:strokeWidth="3.5" android:strokeLineCap="round"
+        android:pathData="M67.79,42.43 A18,18 0 0,1 67.79,65.57" />
+    <path android:strokeColor="#00E5FF" android:strokeWidth="3.5" android:strokeLineCap="round"
+        android:pathData="M40.21,42.43 A18,18 0 0,0 40.21,65.57" />
+    <path android:strokeColor="#FF2BD6" android:strokeWidth="3.5" android:strokeLineCap="round"
+        android:pathData="M73.92,37.29 A26,26 0 0,1 73.92,70.71" />
+    <path android:strokeColor="#FF2BD6" android:strokeWidth="3.5" android:strokeLineCap="round"
+        android:pathData="M34.08,37.29 A26,26 0 0,0 34.08,70.71" />
+</vector>
