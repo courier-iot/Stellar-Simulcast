@@ -28,10 +28,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,6 +42,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -47,60 +51,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.stellar.simulcast.data.Anime
-import com.stellar.simulcast.data.TitleLang
+import com.stellar.simulcast.data.Settings
+import com.stellar.simulcast.data.TimeText
 import kotlinx.coroutines.delay
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import kotlin.random.Random
 
-// ---------- watchlist access for any screen ----------
+// ---------- library access for any screen ----------
 
-data class WatchActions(val ids: Set<Int>, val toggle: (Int) -> Unit)
+data class WatchActions(
+    val ids: Set<Int>,
+    val hidden: Set<Int>,
+    val progress: Map<Int, Int>,
+    val toggle: (Int) -> Unit,
+)
 
-val LocalWatch = compositionLocalOf { WatchActions(emptySet()) {} }
+val LocalWatch = compositionLocalOf { WatchActions(emptySet(), emptySet(), emptyMap()) {} }
 
-val LocalTitleLang = compositionLocalOf { TitleLang.ENGLISH }
-
-/** Chips laid out in rows of [perRow], each row sharing the width evenly. */
-@Composable
-fun ChipGrid(options: List<String>, selected: Set<String>, label: (String) -> String = { it }, perRow: Int = 3, onToggle: (String) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        options.chunked(perRow).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                row.forEach { opt ->
-                    Box(Modifier.weight(1f)) {
-                        GridChip(label(opt), opt in selected) { onToggle(opt) }
-                    }
-                }
-                repeat(perRow - row.size) { Spacer(Modifier.weight(1f)) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun GridChip(text: String, selected: Boolean, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(10.dp)
-    Text(
-        text,
-        color = if (selected) Space.Bg else Space.Text,
-        fontSize = 12.sp,
-        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        textAlign = TextAlign.Center,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(if (selected) Space.Cyan else Space.Card)
-            .border(1.dp, (if (selected) Space.Cyan else Space.Muted).copy(alpha = 0.5f), shape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 8.dp),
-    )
-}
-
-// ---------- time helpers ----------
+// ---------- time + text helpers ----------
 
 @Composable
 fun rememberNow(): Long {
@@ -135,12 +102,6 @@ fun ago(seconds: Long): String {
     }
 }
 
-private val clockFmt = DateTimeFormatter.ofPattern("h:mm a")
-private val dateTimeFmt = DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a")
-
-fun clock(epoch: Long): String = Instant.ofEpochSecond(epoch).atZone(ZoneId.systemDefault()).format(clockFmt)
-fun dateTime(epoch: Long): String = Instant.ofEpochSecond(epoch).atZone(ZoneId.systemDefault()).format(dateTimeFmt)
-
 fun formatLabel(f: String?): String? = when (f) {
     null -> null
     "TV" -> "TV"
@@ -161,10 +122,21 @@ fun statusLabel(s: String?): String = when (s) {
     else -> "Unknown"
 }
 
+/** "EP 5 · in 2h 10m", "On break · EP 5 in 12d", or the status. Uses your stream delay. */
 fun airingHeadline(a: Anime, now: Long): String {
     val at = a.nextAiringAt
     val ep = a.nextEpisode
-    return if (at != null && ep != null) "EP $ep · ${countdown(at - now)}" else statusLabel(a.status)
+    if (at == null || ep == null) return statusLabel(a.status)
+    val left = TimeText.streamAt(at) - now
+    return if (a.onBreak(now)) "On break · EP $ep ${countdown(left)}" else "EP $ep · ${countdown(left)}"
+}
+
+/** "3 behind" / "caught up" for shows you've logged progress on. */
+fun progressBadge(a: Anime, watched: Int?): String? {
+    if (watched == null) return null
+    val aired = a.airedCount ?: return "watched $watched"
+    val behind = aired - watched
+    return if (behind > 0) "$behind behind" else "caught up"
 }
 
 fun metaLine(a: Anime): String = listOfNotNull(
@@ -181,16 +153,18 @@ fun Starfield(modifier: Modifier = Modifier) {
         val r = Random(7)
         List(150) { Triple(r.nextFloat(), r.nextFloat(), r.nextFloat()) }
     }
+    val a = Space.Magenta
+    val b = Space.Cyan
     Canvas(modifier.fillMaxSize()) {
         drawRect(Brush.verticalGradient(listOf(Color(0xFF0A0B1E), Space.Bg, Color(0xFF08030F))))
         val glowA = Offset(size.width * 0.95f, size.height * 0.1f)
         drawCircle(
-            Brush.radialGradient(listOf(Space.Magenta.copy(alpha = 0.12f), Color.Transparent), glowA, size.width * 0.8f),
+            Brush.radialGradient(listOf(a.copy(alpha = 0.12f), Color.Transparent), glowA, size.width * 0.8f),
             radius = size.width * 0.8f, center = glowA,
         )
         val glowB = Offset(0f, size.height * 0.85f)
         drawCircle(
-            Brush.radialGradient(listOf(Space.Cyan.copy(alpha = 0.08f), Color.Transparent), glowB, size.width * 0.9f),
+            Brush.radialGradient(listOf(b.copy(alpha = 0.08f), Color.Transparent), glowB, size.width * 0.9f),
             radius = size.width * 0.9f, center = glowB,
         )
         stars.forEach { (x, y, s) ->
@@ -240,16 +214,22 @@ fun AnimeRow(
     onClick: () -> Unit,
     headlineColor: Color = Space.Cyan,
 ) {
+    val compact = Settings.display.compact
+    val watch = LocalWatch.current
+    val badge = progressBadge(anime, watch.progress[anime.id])
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 5.dp)
+            .padding(horizontal = 12.dp, vertical = if (compact) 3.dp else 5.dp)
             .neonPanel(headlineColor)
             .clickable(onClick = onClick)
-            .padding(10.dp),
+            .padding(if (compact) 6.dp else 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Poster(anime.cover, Modifier.size(width = 58.dp, height = 82.dp))
+        Poster(
+            anime.cover,
+            if (compact) Modifier.size(width = 38.dp, height = 54.dp) else Modifier.size(width = 58.dp, height = 82.dp),
+        )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -257,12 +237,17 @@ fun AnimeRow(
                 fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1,
             )
             Text(
-                anime.name(LocalTitleLang.current), color = Space.Text, style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                anime.name(Settings.titleLang), color = Space.Text, style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis,
             )
-            val meta = metaLine(anime)
-            if (meta.isNotEmpty()) {
-                Text(meta, color = Space.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+            if (!compact || badge != null) {
+                val meta = listOfNotNull(badge, metaLine(anime).takeIf { !compact && it.isNotEmpty() }).joinToString(" · ")
+                if (meta.isNotEmpty()) {
+                    Text(
+                        meta, color = if (badge != null && badge.endsWith("behind")) Space.Magenta else Space.Muted,
+                        style = MaterialTheme.typography.bodySmall, maxLines = 1,
+                    )
+                }
             }
         }
         WatchButton(anime.id)
@@ -281,11 +266,15 @@ fun PosterTile(anime: Anime, now: Long, onClick: () -> Unit) {
                     modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(18.dp),
                 )
             }
-            val at = anime.nextAiringAt
-            val ep = anime.nextEpisode
-            if (at != null && ep != null) {
+            val bottom = when {
+                anime.nextAiringAt != null && anime.nextEpisode != null ->
+                    "EP ${anime.nextEpisode} ${countdown(TimeText.streamAt(anime.nextAiringAt) - now)}"
+                anime.status == "FINISHED" && anime.episodes != null -> "${anime.episodes} eps · done"
+                else -> null
+            }
+            if (bottom != null) {
                 Text(
-                    "EP $ep ${countdown(at - now)}",
+                    bottom,
                     color = Space.Cyan, fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
@@ -297,9 +286,28 @@ fun PosterTile(anime: Anime, now: Long, onClick: () -> Unit) {
             }
         }
         Text(
-            anime.name(LocalTitleLang.current), color = Space.Text, style = MaterialTheme.typography.labelMedium,
+            anime.name(Settings.titleLang), color = Space.Text, style = MaterialTheme.typography.labelMedium,
             maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp),
         )
+    }
+}
+
+/** Text that stays hidden behind "tap to reveal" while spoiler-safe mode is on. */
+@Composable
+fun SpoilerText(text: String, style: TextStyle, color: Color = Space.Text, modifier: Modifier = Modifier) {
+    var revealed by remember(text) { mutableStateOf(false) }
+    if (Settings.display.spoilerSafe && !revealed) {
+        Text(
+            "Spoiler-safe · tap to reveal",
+            color = Space.Muted, style = style, fontFamily = FontFamily.Monospace,
+            modifier = modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Space.Card)
+                .clickable { revealed = true }
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+    } else {
+        Text(text, color = color, style = style, modifier = modifier)
     }
 }
 
@@ -318,6 +326,50 @@ fun NeonChip(text: String, selected: Boolean, onClick: () -> Unit) {
             .border(1.dp, (if (selected) Space.Cyan else Space.Muted).copy(alpha = 0.6f), shape)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 7.dp),
+    )
+}
+
+/** Chips laid out in rows of [perRow], each row sharing the width evenly. */
+@Composable
+fun ChipGrid(
+    options: List<String>,
+    selected: Set<String>,
+    label: (String) -> String = { it },
+    perRow: Int = 3,
+    onToggle: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        options.chunked(perRow).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { opt ->
+                    Box(Modifier.weight(1f)) {
+                        GridChip(label(opt), opt in selected) { onToggle(opt) }
+                    }
+                }
+                repeat(perRow - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GridChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(10.dp)
+    Text(
+        text,
+        color = if (selected) Space.Bg else Space.Text,
+        fontSize = 12.sp,
+        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(if (selected) Space.Cyan else Space.Card)
+            .border(1.dp, (if (selected) Space.Cyan else Space.Muted).copy(alpha = 0.5f), shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 8.dp),
     )
 }
 
@@ -384,7 +436,7 @@ fun ListFooter(loading: Boolean, error: String?, hasMore: Boolean, itemCount: In
                 OutlinedButton(onClick = onMore) { Text("Retry", color = Space.Cyan) }
             }
             hasMore -> {
-                androidx.compose.runtime.LaunchedEffect(itemCount) { onMore() }
+                LaunchedEffect(itemCount) { onMore() }
                 CircularProgressIndicator(color = Space.Cyan, modifier = Modifier.size(28.dp))
             }
         }

@@ -5,20 +5,26 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.NewReleases
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.Settings as SettingsIcon
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -26,6 +32,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,23 +40,18 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.rounded.FilterList
-import androidx.compose.material.icons.rounded.Settings as SettingsIcon
-import androidx.compose.material3.IconButton
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.draw.clip
 import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.Watchlist
 import com.stellar.simulcast.work.Notifier
@@ -57,7 +59,7 @@ import com.stellar.simulcast.work.Notifier
 enum class Tab(val label: String, val icon: ImageVector) {
     SCHEDULE("Schedule", Icons.Rounded.CalendarMonth),
     AIRED("Just aired", Icons.Rounded.NewReleases),
-    SEASON("Season", Icons.Rounded.AutoAwesome),
+    BROWSE("Browse", Icons.Rounded.AutoAwesome),
     SEARCH("Search", Icons.Rounded.Search),
     WATCH("Watchlist", Icons.Rounded.Star),
 }
@@ -67,7 +69,11 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
     val vm: AppViewModel = viewModel()
     val ctx = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(Tab.SCHEDULE) }
+    var showFilters by rememberSaveable { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
     val ids by Watchlist.ids.collectAsStateWithLifecycle()
+    val hidden by Watchlist.hidden.collectAsStateWithLifecycle()
+    val progress by Watchlist.progress.collectAsStateWithLifecycle()
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
     val toggle: (Int) -> Unit = { id ->
@@ -78,16 +84,17 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
         }
     }
     val open: (Int) -> Unit = { openAnime.value = it }
-    val lang by Settings.titleLang.collectAsStateWithLifecycle()
-    val filters by Settings.filters.collectAsStateWithLifecycle()
-    var showFilters by rememberSaveable { mutableStateOf(false) }
-    var showSettings by rememberSaveable { mutableStateOf(false) }
+    val filters = Settings.filters
 
     LaunchedEffect(filters) { vm.applyFilters(filters) }
 
+    // "Larger text" scales every font in the app by 15%.
+    val density = LocalDensity.current
+    val scaled = if (Settings.display.largeText) Density(density.density, density.fontScale * 1.15f) else density
+
     CompositionLocalProvider(
-        LocalWatch provides WatchActions(ids, toggle),
-        LocalTitleLang provides lang,
+        LocalWatch provides WatchActions(ids, hidden, progress, toggle),
+        LocalDensity provides scaled,
     ) {
         Box(Modifier.fillMaxSize()) {
             Starfield()
@@ -125,7 +132,7 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
                     when (tab) {
                         Tab.SCHEDULE -> ScheduleScreen(vm, open)
                         Tab.AIRED -> JustAiredScreen(vm, open)
-                        Tab.SEASON -> SeasonScreen(vm, open)
+                        Tab.BROWSE -> BrowseScreen(vm, open)
                         Tab.SEARCH -> SearchScreen(vm, open)
                         Tab.WATCH -> WatchlistScreen(vm, open)
                     }
@@ -134,13 +141,13 @@ fun SimulcastRoot(openAnime: MutableState<Int?>) {
 
             if (showSettings) {
                 BackHandler { showSettings = false }
-                SettingsScreen(onBack = { showSettings = false })
+                SettingsScreen(vm, onBack = { showSettings = false }, open = open)
             }
 
             val detailId = openAnime.value
             if (detailId != null) {
                 BackHandler { openAnime.value = null }
-                DetailScreen(detailId, onBack = { openAnime.value = null })
+                DetailScreen(detailId, onBack = { openAnime.value = null }, open = open)
             }
 
             if (showFilters) FilterDialog(onDismiss = { showFilters = false })

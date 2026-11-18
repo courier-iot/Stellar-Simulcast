@@ -5,8 +5,11 @@ plugins {
 }
 
 // Bump this for every update. The GitHub workflow reads it and publishes the release as "v<appVersion>".
-val appVersion = "1.1.0"
+val appVersion = "2.0.0"
 val versionParts = appVersion.split(".").map { it.toInt() }
+
+// Signing details come from GitHub secrets (see .github/workflows/build.yml). Nothing secret is in the repo.
+val keystorePath: String? = System.getenv("SIGNING_KEYSTORE_PATH")
 
 android {
     namespace = "com.stellar.simulcast"
@@ -22,11 +25,12 @@ android {
 
     signingConfigs {
         create("release") {
-            // Same key every build, so new versions install over old ones.
-            storeFile = file("simulcast.keystore")
-            storePassword = "stellar-simulcast"
-            keyAlias = "simulcast"
-            keyPassword = "stellar-simulcast"
+            if (keystorePath != null) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+            }
         }
     }
 
@@ -35,7 +39,8 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("release")
+            // Local builds without the secrets fall back to the debug key so they still compile.
+            signingConfig = if (keystorePath != null) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
     }
 
@@ -66,7 +71,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.glance:glance-appwidget:1.1.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("com.google.zxing:core:3.5.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }

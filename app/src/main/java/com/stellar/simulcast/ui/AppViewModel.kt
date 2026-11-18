@@ -5,11 +5,11 @@ import androidx.lifecycle.viewModelScope
 import com.stellar.simulcast.data.AiringEp
 import com.stellar.simulcast.data.AniList
 import com.stellar.simulcast.data.Anime
+import com.stellar.simulcast.data.BrowseMode
 import com.stellar.simulcast.data.Filters
 import com.stellar.simulcast.data.Load
-import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.Paged
-import com.stellar.simulcast.data.SeasonKey
+import com.stellar.simulcast.data.Settings
 import com.stellar.simulcast.data.attempt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -32,9 +32,10 @@ class AppViewModel : ViewModel() {
     val schedule = MutableStateFlow<Load<List<AiringEp>>>(Load.Loading)
     val recent = MutableStateFlow<Load<List<AiringEp>>>(Load.Loading)
     val watchlist = MutableStateFlow<Load<List<Anime>>>(Load.Loading)
+    val hiddenShows = MutableStateFlow<Load<List<Anime>>>(Load.Loading)
 
-    val seasonKey = MutableStateFlow(SeasonKey.current())
-    val season = MutableStateFlow(PagedList())
+    val browseMode = MutableStateFlow<BrowseMode>(BrowseMode.Trending)
+    val browse = MutableStateFlow(PagedList())
 
     val query = MutableStateFlow("")
     val search = MutableStateFlow(PagedList(hasMore = false))
@@ -42,11 +43,14 @@ class AppViewModel : ViewModel() {
     private var scheduleJob: Job? = null
     private var recentJob: Job? = null
     private var watchJob: Job? = null
-    private var seasonJob: Job? = null
+    private var browseJob: Job? = null
     private var searchJob: Job? = null
 
     private var scheduleAt = 0L
     private var recentAt = 0L
+
+    private var browseFilters = Settings.filters
+    private var searchFilters = Settings.filters
 
     private fun nowSec() = System.currentTimeMillis() / 1000
 
@@ -56,7 +60,8 @@ class AppViewModel : ViewModel() {
         scheduleJob = viewModelScope.launch {
             schedule.value = Load.Loading
             val start = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toEpochSecond()
-            val result = attempt { AniList.schedule(start - 1, start + 7 * 86400L) }
+            // Pull a little extra on each side so a stream delay can shift episodes across midnight.
+            val result = attempt { AniList.schedule(start - 6 * 3600, start + 7 * 86400L) }
             if (result is Load.Ready) scheduleAt = nowSec()
             schedule.value = result
         }
@@ -67,7 +72,7 @@ class AppViewModel : ViewModel() {
         if (!force && recent.value is Load.Ready && nowSec() - recentAt < 300) return
         recentJob = viewModelScope.launch {
             recent.value = Load.Loading
-            val result = attempt { AniList.recent(48) }
+            val result = attempt { AniList.recent(54) }
             if (result is Load.Ready) recentAt = nowSec()
             recent.value = result
         }
@@ -83,24 +88,41 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    private var seasonFilters = Settings.filters.value
-    private var searchFilters = Settings.filters.value
-
-    fun setSeason(key: SeasonKey) {
-        if (key == seasonKey.value && (season.value.items.isNotEmpty() || season.value.loading)) return
-        seasonJob?.cancel()
-        seasonKey.value = key
-        season.value = PagedList()
-        loadMoreSeason()
+    fun loadHidden(ids: Set<Int>) {
+        viewModelScope.launch {
+            hiddenShows.value = Load.Loading
+            hiddenShows.value = attempt { AniList.byIds(ids.toList()) }
+        }
     }
 
-    /** Called when filters change; restarts the season list and the current search. */
+    // ---------- Browse ----------
+
+    fun setBrowseMode(mode: BrowseMode) {
+        if (mode == browseMode.value && (browse.value.items.isNotEmpty() || browse.value.loading)) return
+        browseJob?.cancel()
+        browseMode.value = mode
+        browse.value = PagedList()
+        loadMoreBrowse()
+    }
+
+    fun loadMoreBrowse() {
+        val cur = browse.value
+        if (cur.loading || !cur.hasMore) return
+        browse.value = cur.copy(loading = true, error = null)
+        val mode = browseMode.value
+        val f = browseFilters
+        browseJob = viewModelScope.launch {
+            browse.value = merge(cur, attempt { AniList.browse(mode, cur.page + 1, f) })
+        }
+    }
+
+    /** Called when filters change; restarts Browse and the current search. */
     fun applyFilters(f: Filters) {
-        if (f != seasonFilters) {
-            seasonFilters = f
-            seasonJob?.cancel()
-            season.value = PagedList()
-            loadMoreSeason()
+        if (f != browseFilters) {
+            browseFilters = f
+            browseJob?.cancel()
+            browse.value = PagedList()
+            loadMoreBrowse()
         }
         if (f != searchFilters) {
             searchFilters = f
@@ -108,16 +130,7 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    fun loadMoreSeason() {
-        val cur = season.value
-        if (cur.loading || !cur.hasMore) return
-        season.value = cur.copy(loading = true, error = null)
-        val key = seasonKey.value
-        val f = seasonFilters
-        seasonJob = viewModelScope.launch {
-            season.value = merge(cur, attempt { AniList.season(key, cur.page + 1, f) })
-        }
-    }
+    // ---------- Search ----------
 
     fun setQuery(q: String) {
         query.value = q

@@ -28,11 +28,31 @@ data class Anime(
         val other = if (lang == TitleLang.ENGLISH) romaji else english
         return other?.takeIf { it != name(lang) }
     }
+
+    /** Episodes that have already aired, based on the next one coming up. */
+    val airedCount: Int?
+        get() = when {
+            nextEpisode != null -> nextEpisode - 1
+            status == "FINISHED" -> episodes
+            else -> null
+        }
+
+    /** A releasing show whose next episode is more than 8 days out has skipped a week. */
+    fun onBreak(now: Long): Boolean {
+        val at = nextAiringAt ?: return false
+        return status == "RELEASING" && (nextEpisode ?: 0) > 1 && at - now > 8 * 86400
+    }
 }
 
 data class AiringEp(val id: Int, val episode: Int, val airingAt: Long, val anime: Anime)
 
-data class StreamLink(val site: String, val url: String)
+data class StreamLink(val site: String, val url: String, val language: String?)
+
+data class CastMember(val character: String, val characterImage: String?, val role: String?, val voiceActor: String?)
+
+data class Related(val anime: Anime, val relation: String)
+
+data class EpisodeInfo(val number: Int, val airingAt: Long?, val title: String?, val url: String?)
 
 data class AnimeDetail(
     val anime: Anime,
@@ -44,7 +64,13 @@ data class AnimeDetail(
     val duration: Int?,
     val source: String?,
     val links: List<StreamLink>,
-    val upcoming: List<Pair<Int, Long>>,
+    /** Every episode AniList has a date or title for, in order. */
+    val episodeList: List<EpisodeInfo>,
+    val trailerUrl: String?,
+    val cast: List<CastMember>,
+    val related: List<Related>,
+    /** Change in average score over roughly the last month, if known. */
+    val scoreChange: Int?,
 )
 
 data class Paged<T>(val items: List<T>, val hasMore: Boolean)
@@ -76,3 +102,22 @@ data class SeasonKey(val season: Season, val year: Int) {
         }
     }
 }
+
+/** What the Browse tab is showing. */
+sealed interface BrowseMode {
+    val label: String
+
+    data object Trending : BrowseMode {
+        override val label = "Trending"
+    }
+
+    data object BingeReady : BrowseMode {
+        override val label = "Binge-ready"
+    }
+
+    data class OfSeason(val key: SeasonKey) : BrowseMode {
+        override val label: String get() = key.label
+    }
+}
+
+data class SequelNews(val parentTitle: String, val sequel: Anime, val startDate: LocalDate?)

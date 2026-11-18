@@ -1,16 +1,30 @@
 package com.stellar.simulcast.ui
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -21,8 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -30,6 +43,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stellar.simulcast.data.Load
 import com.stellar.simulcast.data.Settings
+import com.stellar.simulcast.data.TimeText
+import com.stellar.simulcast.data.Watchlist
+import com.stellar.simulcast.work.Notifier
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -44,8 +60,8 @@ fun ScheduleScreen(vm: AppViewModel, open: (Int) -> Unit) {
     val state by vm.schedule.collectAsStateWithLifecycle()
     val watch = LocalWatch.current
     var onlyWatch by rememberSaveable { mutableStateOf(false) }
-    val filters by Settings.filters.collectAsStateWithLifecycle()
     var dayIndex by rememberSaveable { mutableStateOf(0) }
+    val filters = Settings.filters
     val now = rememberNow()
     val zone = ZoneId.systemDefault()
     val today = LocalDate.now(zone)
@@ -58,8 +74,14 @@ fun ScheduleScreen(vm: AppViewModel, open: (Int) -> Unit) {
             Load.Loading -> LoadingView()
             is Load.Error -> ErrorView(s.message) { vm.loadSchedule(force = true) }
             is Load.Ready -> {
-                val eps = s.data.filter { (!onlyWatch || it.anime.id in watch.ids) && filters.matches(it.anime) }
-                val byDay = eps.groupBy { Instant.ofEpochSecond(it.airingAt).atZone(zone).toLocalDate() }
+                val eps = s.data.filter {
+                    (!onlyWatch || it.anime.id in watch.ids) &&
+                        it.anime.id !in watch.hidden &&
+                        filters.matches(it.anime)
+                }
+                val byDay = eps.groupBy {
+                    Instant.ofEpochSecond(TimeText.streamAt(it.airingAt)).atZone(zone).toLocalDate()
+                }
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -87,11 +109,12 @@ fun ScheduleScreen(vm: AppViewModel, open: (Int) -> Unit) {
                 } else {
                     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
                         items(list, key = { it.id }) { ep ->
-                            val left = ep.airingAt - now
+                            val at = TimeText.streamAt(ep.airingAt)
+                            val left = at - now
                             AnimeRow(
                                 ep.anime,
-                                headline = "${clock(ep.airingAt)} · EP ${ep.episode} · " +
-                                    if (left > 0) countdown(left) else "aired",
+                                headline = "${TimeText.clock(at)} · EP ${ep.episode} · " +
+                                    if (left > 0) countdown(left) else "out",
                                 headlineColor = if (left > 0) Space.Cyan else Space.Magenta,
                                 onClick = { open(ep.anime.id) },
                             )
@@ -131,7 +154,7 @@ fun JustAiredScreen(vm: AppViewModel, open: (Int) -> Unit) {
     val state by vm.recent.collectAsStateWithLifecycle()
     val watch = LocalWatch.current
     var onlyWatch by rememberSaveable { mutableStateOf(false) }
-    val filters by Settings.filters.collectAsStateWithLifecycle()
+    val filters = Settings.filters
     val now = rememberNow()
 
     Column(Modifier.fillMaxSize()) {
@@ -142,9 +165,19 @@ fun JustAiredScreen(vm: AppViewModel, open: (Int) -> Unit) {
             Load.Loading -> LoadingView()
             is Load.Error -> ErrorView(s.message) { vm.loadRecent(force = true) }
             is Load.Ready -> {
-                val eps = s.data.filter { (!onlyWatch || it.anime.id in watch.ids) && filters.matches(it.anime) }
+                val eps = s.data.filter {
+                    val at = TimeText.streamAt(it.airingAt)
+                    at <= now && now - at <= 48 * 3600 &&
+                        (!onlyWatch || it.anime.id in watch.ids) &&
+                        it.anime.id !in watch.hidden &&
+                        filters.matches(it.anime)
+                }
                 if (eps.isEmpty()) {
-                    EmptyView("All quiet", if (filters.active) "Nothing matches your filters in the last two days." else "No new episodes in the last two days.")
+                    EmptyView(
+                        "All quiet",
+                        if (filters.active) "Nothing matches your filters in the last two days."
+                        else "No new episodes in the last two days.",
+                    )
                 } else {
                     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
                         items(eps, key = { it.id }) { ep ->
@@ -152,7 +185,7 @@ fun JustAiredScreen(vm: AppViewModel, open: (Int) -> Unit) {
                             val epText = if (total != null) "EP ${ep.episode}/$total" else "EP ${ep.episode}"
                             AnimeRow(
                                 ep.anime,
-                                headline = "$epText · ${ago(now - ep.airingAt)}",
+                                headline = "$epText · ${ago(now - TimeText.streamAt(ep.airingAt))}",
                                 headlineColor = Space.Magenta,
                                 onClick = { open(ep.anime.id) },
                             )
@@ -193,7 +226,11 @@ fun WatchlistScreen(vm: AppViewModel, open: (Int) -> Unit) {
                             AnimeRow(
                                 a,
                                 headline = airingHeadline(a, now),
-                                headlineColor = if (a.nextAiringAt != null) Space.Cyan else Space.Muted,
+                                headlineColor = when {
+                                    a.onBreak(now) -> Space.Magenta
+                                    a.nextAiringAt != null -> Space.Cyan
+                                    else -> Space.Muted
+                                },
                                 onClick = { open(a.id) },
                             )
                         }
@@ -201,5 +238,44 @@ fun WatchlistScreen(vm: AppViewModel, open: (Int) -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun AlertsPanel() {
+    val ctx = LocalContext.current
+    val alerts by Watchlist.alerts.collectAsStateWithLifecycle()
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val blocked = alerts && !Notifier.canNotify(ctx)
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .neonPanel(Space.Magenta)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.NotificationsActive, contentDescription = null, tint = Space.Magenta)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Episode alerts", color = Space.Text, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (blocked) "Notifications are off for this app in Android settings."
+                else "More alert options are in Settings.",
+                color = if (blocked) Space.Magenta else Space.Muted,
+                fontSize = 12.sp,
+            )
+        }
+        Switch(
+            checked = alerts,
+            onCheckedChange = { on ->
+                Watchlist.setAlerts(on)
+                if (on && Build.VERSION.SDK_INT >= 33 && !Notifier.canNotify(ctx)) {
+                    permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            },
+            colors = SwitchDefaults.colors(checkedThumbColor = Space.Bg, checkedTrackColor = Space.Cyan),
+        )
     }
 }
